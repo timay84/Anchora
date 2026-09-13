@@ -39,3 +39,4 @@ Run `npm test` and `npm run build` before submitting UI changes. Run `cargo chec
 - Icons are stored in `src-tauri/icons/`; the Windows installer uses `icons/icon.ico` and the PNG sizes listed in the configuration.
 - For Windows on ARM64, install the Rust target once with `rustup target add aarch64-pc-windows-msvc`, then run the ARM64 build command above from the repository root.
 - The ARM64 build requires Visual Studio Build Tools with the MSVC ARM64 toolchain and Windows SDK. Artifacts are written under `src-tauri/target/aarch64-pc-windows-msvc/release/bundle/`.
+- Release builds hide the Windows console; closing the main window hides it to the system tray instead. Left-click the Anchora tray icon to toggle the window, and use the tray menu's `退出` item to terminate the process.
