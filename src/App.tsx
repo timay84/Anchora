@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Check, Clock3, Hash, History, Leaf, Menu, Play, Plus, Settings, Sparkles, SquareCheckBig, X } from 'lucide-react';
 import { defaultData, AppData } from './types';
@@ -7,24 +7,56 @@ import { loadData, saveData } from './storage';
 type Page = 'today' | 'history' | 'settings';
 const today = () => new Date().toISOString().slice(0, 10);
 
+function playCountdownTone(isEntry: boolean, volume: number) {
+  const AudioContextClass = window.AudioContext;
+  if (!AudioContextClass) return;
+  const context = new AudioContextClass();
+  const now = context.currentTime;
+  const gain = context.createGain();
+  gain.gain.setValueAtTime(Math.max(0.01, Math.min(0.14, volume / 100 * (isEntry ? 0.18 : 0.1))), now);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + (isEntry ? 0.7 : 0.22));
+  gain.connect(context.destination);
+  const frequencies = isEntry ? [660, 880] : [520];
+  frequencies.forEach((frequency, index) => {
+    const oscillator = context.createOscillator();
+    oscillator.type = 'sine';
+    oscillator.frequency.value = frequency;
+    oscillator.connect(gain);
+    oscillator.start(now + index * 0.12);
+    oscillator.stop(now + (isEntry ? 0.7 : 0.22));
+  });
+  window.setTimeout(() => void context.close(), 900);
+}
+
 export function App() {
   const [data, setData] = useState<AppData>(loadData);
   const [page, setPage] = useState<Page>('today');
   const [tag, setTag] = useState('全部');
   const [remaining, setRemaining] = useState(0);
   const [reminding, setReminding] = useState(false);
+  const finalAlertRef = useRef(false);
   const [taskText, setTaskText] = useState('');
   const [menu, setMenu] = useState(false);
   useEffect(() => saveData(data), [data]);
   useEffect(() => { if (!remaining) return; const timer = window.setInterval(() => setRemaining(v => Math.max(0, v - 1)), 1000); return () => clearInterval(timer); }, [remaining]);
-  useEffect(() => { if (remaining > 0 && remaining <= data.settings.warningMinutes * 60) setReminding(true); }, [remaining, data.settings.warningMinutes]);
+  useEffect(() => {
+    if (!remaining) return;
+    if (remaining <= data.settings.warningMinutes * 60) setReminding(true);
+    if (remaining <= data.settings.finalSeconds) {
+      if (data.settings.sound) playCountdownTone(!finalAlertRef.current, data.settings.volume);
+      finalAlertRef.current = true;
+    } else {
+      finalAlertRef.current = false;
+    }
+  }, [remaining, data.settings.warningMinutes, data.settings.finalSeconds, data.settings.sound, data.settings.volume]);
   const tags = useMemo(() => ['全部', ...new Set(data.moments.flatMap(m => m.tags))], [data.moments]);
   const visibleMoments = data.moments.filter(m => tag === '全部' || m.tags.includes(tag));
   const update = (patch: Partial<AppData>) => setData(current => ({ ...current, ...patch }));
   const addMoment = () => { if (!data.draft.trim()) return; const tagsFound = data.draft.match(/#[\w\u4e00-\u9fff-]+/g)?.map(v => v.slice(1)) || []; update({ moments: [{ id: crypto.randomUUID(), text: data.draft.trim(), tags: tagsFound, createdAt: new Date().toISOString() }, ...data.moments], draft: '' }); };
   const addTask = () => { if (!taskText.trim()) return; update({ tasks: [{ id: crypto.randomUUID(), text: taskText.trim(), done: false, createdAt: new Date().toISOString() }, ...data.tasks] }); setTaskText(''); };
   const formatTime = (seconds: number) => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
-  const startFocus = () => { setReminding(false); setRemaining(data.settings.focusMinutes * 60); void invoke('show_focus_overlay').catch(() => undefined); };
+  const startFocus = () => { finalAlertRef.current = false; setReminding(false); setRemaining(data.settings.focusMinutes * 60); void invoke('show_focus_overlay').catch(() => undefined); };
+  const finalMode = reminding && remaining <= data.settings.finalSeconds;
 
   return <div className="app-shell">
     <aside className={`sidebar ${menu ? 'sidebar-open' : ''}`}>
@@ -39,12 +71,12 @@ export function App() {
       {page === 'history' && <section className="panel history-panel"><div className="filter-row">{tags.map(item => <button className={tag === item ? 'filter-active' : ''} onClick={() => setTag(item)} key={item}>{item === '全部' ? item : `#${item}`}</button>)}</div>{visibleMoments.length === 0 ? <p className="empty large-empty">还没有记录，今天就是很好的开始。</p> : visibleMoments.map(moment => <article className="moment-card" key={moment.id}><time>{new Date(moment.createdAt).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })}</time><p className={data.settings.privacyLock ? 'blurred' : ''}>{moment.text}</p><div>{moment.tags.map(item => <span key={item}>#{item}</span>)}</div></article>)}</section>}
       {page === 'settings' && <SettingsPanel data={data} update={update} />}
     </main>
-    {reminding && <div className="reminder-overlay"><div className="crack crack-one" /><div className="crack crack-two" /><button className="close-reminder" onClick={() => setReminding(false)}><X /></button><div className="reminder-content"><span className="kicker">觉察时刻 · {formatTime(remaining)}</span><h2>请总结已经完成的事<br />和还没完成的事。</h2><textarea placeholder="此刻，你注意到了什么？" autoFocus /><div><button className="snooze-button" onClick={() => { setRemaining(300); setReminding(false); }}>稍后处理 · 5 分钟</button><button className="primary-button" onClick={() => { setRemaining(0); setReminding(false); }}>结束本次专注</button></div></div></div>}
+    {reminding && <div className={`reminder-overlay ${finalMode ? 'final-reminder' : ''}`}><div className="crack crack-one" /><div className="crack crack-two" /><div className="crack crack-three" /><button className="close-reminder" onClick={() => setReminding(false)}><X /></button><div className="reminder-content"><span className="kicker">{finalMode ? '最后倒数' : `觉察时刻 · ${formatTime(remaining)}`}</span>{finalMode && <div className="final-countdown" aria-live="assertive">{remaining}</div>}<h2>{finalMode ? <>现在，停下来。<br /><em>听见这一刻。</em></> : <>请总结已经完成的事<br />和还没完成的事。</>}</h2>{!finalMode && <textarea placeholder="此刻，你注意到了什么？" autoFocus />}<div><button className="snooze-button" onClick={() => { setRemaining(300); setReminding(false); }}>稍后处理 · 5 分钟</button><button className="primary-button" onClick={() => { setRemaining(0); setReminding(false); }}>结束本次专注</button></div></div></div>}
   </div>;
 }
 
 function SettingsPanel({ data, update }: { data: AppData; update: (patch: Partial<AppData>) => void }) {
   const settings = data.settings;
   const change = (patch: Partial<typeof settings>) => update({ settings: { ...settings, ...patch } });
-  return <section className="panel settings-panel"><span className="kicker">偏好设置</span><h2>让 Anchora 适合你的节奏。</h2><div className="setting-group"><label>专注时长 <output>{settings.focusMinutes} 分钟</output></label><input type="range" min="5" max="90" step="5" value={settings.focusMinutes} onChange={e => change({ focusMinutes: +e.target.value })} /></div><div className="setting-group"><label>提前预警 <output>{settings.warningMinutes} 分钟</output></label><input type="range" min="1" max="10" value={settings.warningMinutes} onChange={e => change({ warningMinutes: +e.target.value })} /></div><div className="setting-row"><div><strong>提醒声音</strong><p>觉察时刻播放温和提示音</p></div><input type="checkbox" checked={settings.sound} onChange={e => change({ sound: e.target.checked })} /></div><div className="setting-row"><div><strong>隐藏敏感内容</strong><p>历史回顾中的文字将保持模糊</p></div><input type="checkbox" checked={settings.privacyLock} onChange={e => change({ privacyLock: e.target.checked })} /></div><button className="export-button" onClick={() => void invoke('export_data', { format: 'markdown', data: JSON.stringify(data) }).catch(() => undefined)}>导出我的数据 · Markdown</button></section>;
+  return <section className="panel settings-panel"><span className="kicker">偏好设置</span><h2>让 Anchora 适合你的节奏。</h2><div className="setting-group"><label>专注时长 <output>{settings.focusMinutes} 分钟</output></label><input type="range" min="5" max="90" step="5" value={settings.focusMinutes} onChange={e => change({ focusMinutes: +e.target.value })} /></div><div className="setting-group"><label>提前预警 <output>{settings.warningMinutes} 分钟</output></label><input type="range" min="1" max="10" value={settings.warningMinutes} onChange={e => change({ warningMinutes: +e.target.value })} /></div><div className="setting-group"><label>强化倒数 <output>{settings.finalSeconds} 秒</output></label><input type="range" min="5" max="30" value={settings.finalSeconds} onChange={e => change({ finalSeconds: +e.target.value })} /></div><div className="setting-row"><div><strong>提醒声音</strong><p>觉察时刻播放温和提示音</p></div><input type="checkbox" checked={settings.sound} onChange={e => change({ sound: e.target.checked })} /></div><div className="setting-row"><div><strong>隐藏敏感内容</strong><p>历史回顾中的文字将保持模糊</p></div><input type="checkbox" checked={settings.privacyLock} onChange={e => change({ privacyLock: e.target.checked })} /></div><button className="export-button" onClick={() => void invoke('export_data', { format: 'markdown', data: JSON.stringify(data) }).catch(() => undefined)}>导出我的数据 · Markdown</button></section>;
 }
