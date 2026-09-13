@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.timay84.anchora",
   "build": { "beforeDevCommand": "npm run dev", "devUrl": "http://localhost:5173", "beforeBuildCommand": "npm run build", "frontendDist": "../dist" },
-  "app": { "windows": [{ "label": "main", "title": "Anchora · 你的专注港湾", "width": 1100, "height": 760, "minWidth": 720, "minHeight": 600, "resizable": true, "visible": true }], "security": { "csp": null } },
+  "app": { "windows": [
+    { "label": "main", "title": "Anchora · 你的专注港湾", "width": 1100, "height": 760, "minWidth": 720, "minHeight": 600, "resizable": true, "visible": true },
+    { "label": "reflection", "title": "Anchora · 总结", "width": 420, "height": 300, "center": true, "resizable": false, "visible": false, "transparent": true, "decorations": false, "alwaysOnTop": true }
+  ], "security": { "csp": null } },
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],

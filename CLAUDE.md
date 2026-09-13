@@ -17,12 +17,14 @@ Anchora is a local-first Tauri 2 desktop app for mindful productivity. The two p
 - `npm run build`: type-check and build the frontend.
 - `npm test`: run Vitest tests.
 - `npm run tauri dev`: run the complete desktop app (requires Rust and platform prerequisites).
+- `npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis,msi`: build Windows x64 installers.
 - `npm run tauri build -- --target aarch64-pc-windows-msvc --bundles nsis,msi`: build Windows on ARM64 installers.
 
 ## Implementation rules
 
 - Keep user data local. Use the versioned `anchora:data:v1` storage key and extend `AppData` deliberately.
-- Keep timer/reminder controls non-blocking: always preserve snooze, end, and close actions.
+- Keep timer/reminder controls non-blocking: always preserve snooze, end, close, summary save, and emergency lock-exit actions.
+- Calculate focus, reflection, and lock deadlines from the session's persisted timestamps; snapshot the user settings when a session starts.
 - Native functionality belongs behind Tauri commands in `src-tauri/src/lib.rs`; the UI must tolerate browser/Vite mode where `invoke` is unavailable.
 - Use React components for feature boundaries and Tailwind utilities only when they improve readability; shared visual tokens live in `src/styles.css`.
 - Any new persisted field needs a safe default and a storage test.
@@ -39,4 +41,13 @@ Run `npm test` and `npm run build` before submitting UI changes. Run `cargo chec
 - Icons are stored in `src-tauri/icons/`; the Windows installer uses `icons/icon.ico` and the PNG sizes listed in the configuration.
 - For Windows on ARM64, install the Rust target once with `rustup target add aarch64-pc-windows-msvc`, then run the ARM64 build command above from the repository root.
 - The ARM64 build requires Visual Studio Build Tools with the MSVC ARM64 toolchain and Windows SDK. Artifacts are written under `src-tauri/target/aarch64-pc-windows-msvc/release/bundle/`.
+- For Windows x64, install the Rust target once with `rustup target add x86_64-pc-windows-msvc`, then run the x64 build command above from the repository root. Artifacts are written under `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/`.
 - Release builds hide the Windows console; closing the main window hides it to the system tray instead. Left-click the Anchora tray icon to toggle the window, and use the tray menu's `退出` item to terminate the process.
+
+## Obsidian Vault
+
+- The Settings page can select an Obsidian Vault directory using the native dialog.
+- Anchora writes daily records to `<vault>/Anchora/Daily/YYYY-MM-DD.md` using the two-section Markdown template.
+- The timeline reads daily Markdown files from that directory and can open a selected note with the system default application.
+- LocalStorage remains the draft/settings cache. Daily Markdown is the shared record format for Anchora and Obsidian.
+- The current sync path is local and same-machine. Avoid editing the same daily file concurrently until conflict-aware merging is implemented.
