@@ -2,7 +2,7 @@
 
 ## Product shape
 
-Anchora is a local-first Tauri 2 desktop app for mindful productivity. The two primary records are daily tasks and mindful moments. The focus timer must remain dismissible through snooze and end controls.
+Anchora is a local-first Tauri 2 desktop app for mindful productivity. Its records are mindful moments, daily tasks, and focus-session work caches. The timeline supports date-based browsing, creation, editing, deletion, and forwarding between record types.
 
 ## Repository layout
 
@@ -25,6 +25,8 @@ Anchora is a local-first Tauri 2 desktop app for mindful productivity. The two p
 - Keep user data local. Use the versioned `anchora:data:v1` storage key and extend `AppData` deliberately.
 - Keep timer/reminder controls non-blocking: always preserve snooze, end, close, summary save, and emergency lock-exit actions.
 - Calculate focus, reflection, and lock deadlines from the session's persisted timestamps; snapshot the user settings when a session starts.
+- Persist forwarding metadata (`sentTo` and `sentAt`) for moments and tasks, preserve the original record, and mark forwarded records complete and non-editable.
+- Use the computer's local timezone for record dates and display times; Markdown serialization and parsing must preserve forwarding metadata.
 - Native functionality belongs behind Tauri commands in `src-tauri/src/lib.rs`; the UI must tolerate browser/Vite mode where `invoke` is unavailable.
 - Use React components for feature boundaries and Tailwind utilities only when they improve readability; shared visual tokens live in `src/styles.css`.
 - Any new persisted field needs a safe default and a storage test.
@@ -33,6 +35,7 @@ Anchora is a local-first Tauri 2 desktop app for mindful productivity. The two p
 ## Verification
 
 Run `npm test` and `npm run build` before submitting UI changes. Run `cargo check` from `src-tauri` on a machine with Rust installed before changing native commands.
+The current frontend test suite contains 8 Vitest tests.
 
 ## Windows packaging
 

@@ -28,6 +28,25 @@ import { loadData, saveData } from "./storage";
 type Page = "today" | "history" | "settings";
 type SendTarget = "moment" | "task";
 type ReflectionCompleted = { completed: string; pending: string };
+type SendableRecord = Moment | Task;
+type SelectedRecord = { item: SendableRecord; source: SendTarget };
+type NewRecordKind = "moment" | "task" | "cache";
+type EditSelection =
+  | { kind: "moment"; item: Moment }
+  | { kind: "task"; item: Task }
+  | { kind: "cache"; item: WorkCache };
+
+function localDateTimeIso(date: string, source = new Date()) {
+  const time = `${String(source.getHours()).padStart(2, "0")}:${String(
+    source.getMinutes(),
+  ).padStart(2, "0")}:${String(source.getSeconds()).padStart(2, "0")}`;
+  return new Date(`${date}T${time}`).toISOString();
+}
+
+function sentStatus(target?: SendTarget, sentAt?: string) {
+  if (!target || !sentAt) return "已发送";
+  return `已转为${target === "moment" ? "美好瞬间" : "日常事务"}，发送于 ${new Date(sentAt).toLocaleString("zh-CN")}`;
+}
 
 export function App() {
   const isReflectionWindow =
@@ -224,21 +243,39 @@ export function App() {
         item.id === id ? { ...item, ...patch } : item,
       ),
     });
-  const deleteMoment = (id: string) =>
-    replaceData({
-      ...data,
-      moments: data.moments.filter((item) => item.id !== id),
-    });
-  const deleteTask = (id: string) =>
-    replaceData({
-      ...data,
-      tasks: data.tasks.filter((item) => item.id !== id),
-    });
-  const deleteCache = (id: string) =>
-    replaceData({
-      ...data,
-      workCache: data.workCache.filter((item) => item.id !== id),
-    });
+  const deleteMoment = (id: string) => {
+    const item = data.moments.find((moment) => moment.id === id);
+    if (!item) return;
+    replaceData(
+      {
+        ...data,
+        moments: data.moments.filter((moment) => moment.id !== id),
+      },
+      [dateKey(item.createdAt)],
+    );
+  };
+  const deleteTask = (id: string) => {
+    const item = data.tasks.find((task) => task.id === id);
+    if (!item) return;
+    replaceData(
+      {
+        ...data,
+        tasks: data.tasks.filter((task) => task.id !== id),
+      },
+      [dateKey(item.createdAt)],
+    );
+  };
+  const deleteCache = (id: string) => {
+    const item = data.workCache.find((cache) => cache.id === id);
+    if (!item) return;
+    replaceData(
+      {
+        ...data,
+        workCache: data.workCache.filter((cache) => cache.id !== id),
+      },
+      [dateKey(item.createdAt)],
+    );
+  };
   const changeCache = (id: string, patch: Partial<WorkCache>) =>
     replaceData({
       ...data,
@@ -252,8 +289,10 @@ export function App() {
     targetDate: string,
   ) => {
     if (item.sentTo) return;
-    const sentAt = new Date().toISOString();
-    const createdAt = `${targetDate}T${sentAt.slice(11, 19)}.000Z`;
+    const sentDate = new Date();
+    const sentAt = sentDate.toISOString();
+    const localTime = `${String(sentDate.getHours()).padStart(2, "0")}:${String(sentDate.getMinutes()).padStart(2, "0")}:${String(sentDate.getSeconds()).padStart(2, "0")}`;
+    const createdAt = new Date(`${targetDate}T${localTime}`).toISOString();
     const text = `已完成：${item.completed || "暂无记录"}；待完成：${item.pending || "暂无记录"}`;
     const next = {
       ...data,
@@ -283,6 +322,83 @@ export function App() {
       ),
     };
     replaceData(next, [dateKey(item.createdAt), targetDate]);
+  };
+  const sendRecord = (
+    item: SendableRecord,
+    source: SendTarget,
+    target: SendTarget,
+    targetDate: string,
+  ) => {
+    if (item.sentTo) return;
+    const sentAt = new Date().toISOString();
+    const createdAt = localDateTimeIso(targetDate);
+    const copiedItem = {
+      id: crypto.randomUUID(),
+      text: item.text,
+      done: false,
+      createdAt,
+    };
+    const moments =
+      source === "moment"
+        ? data.moments.map((record) =>
+            record.id === item.id
+              ? { ...record, done: true, sentTo: target, sentAt }
+              : record,
+          )
+        : data.moments;
+    const tasks =
+      source === "task"
+        ? data.tasks.map((record) =>
+            record.id === item.id
+              ? { ...record, done: true, sentTo: target, sentAt }
+              : record,
+          )
+        : data.tasks;
+    const next = {
+      ...data,
+      moments:
+        target === "moment"
+          ? [copiedItem, ...moments]
+          : moments,
+      tasks:
+        target === "task"
+          ? [copiedItem, ...tasks]
+          : tasks,
+    };
+    replaceData(next, [dateKey(item.createdAt), targetDate]);
+  };
+  const addTimelineRecord = (
+    kind: NewRecordKind,
+    targetDate: string,
+    text: string,
+    pending = "",
+  ) => {
+    const createdAt = localDateTimeIso(targetDate);
+    const next = {
+      ...data,
+      moments:
+        kind === "moment"
+          ? [{ id: crypto.randomUUID(), text, done: false, createdAt }, ...data.moments]
+          : data.moments,
+      tasks:
+        kind === "task"
+          ? [{ id: crypto.randomUUID(), text, done: false, createdAt }, ...data.tasks]
+          : data.tasks,
+      workCache:
+        kind === "cache"
+          ? [
+              {
+                id: crypto.randomUUID(),
+                completed: text,
+                pending,
+                done: false,
+                createdAt,
+              },
+              ...data.workCache,
+            ]
+          : data.workCache,
+    };
+    replaceData(next, [targetDate]);
   };
   const chooseVault = async () => {
     const selected = await open({
@@ -517,12 +633,24 @@ export function App() {
             deleteMoment={deleteMoment}
             deleteTask={deleteTask}
             changeCache={changeCache}
-             deleteCache={deleteCache}
-             sendCache={sendCache}
-           />
+            deleteCache={deleteCache}
+            sendCache={sendCache}
+            sendRecord={sendRecord}
+          />
         )}
         {page === "history" && (
-          <TimelinePanel data={data} />
+          <TimelinePanel
+            data={data}
+            sendRecord={sendRecord}
+            sendCache={sendCache}
+            deleteMoment={deleteMoment}
+            deleteTask={deleteTask}
+            deleteCache={deleteCache}
+            changeMoment={changeMoment}
+            changeTask={changeTask}
+            changeCache={changeCache}
+            addTimelineRecord={addTimelineRecord}
+          />
         )}
         {page === "settings" && (
           <SettingsPanel
@@ -557,6 +685,12 @@ function TodayPage(props: {
   changeCache: (id: string, patch: Partial<WorkCache>) => void;
   deleteCache: (id: string) => void;
   sendCache: (item: WorkCache, target: SendTarget, date: string) => void;
+  sendRecord: (
+    item: SendableRecord,
+    source: SendTarget,
+    target: SendTarget,
+    date: string,
+  ) => void;
 }) {
   const {
     data,
@@ -572,10 +706,15 @@ function TodayPage(props: {
     changeCache,
     deleteCache,
     sendCache,
+    sendRecord,
   } = props;
+  const [selectedRecord, setSelectedRecord] = useState<SelectedRecord | null>(
+    null,
+  );
+  const [selectedEdit, setSelectedEdit] = useState<EditSelection | null>(null);
   const today = dateKey();
   return (
-    <section className="content-grid">
+    <section className="content-grid today-grid">
       <div className="main-column">
         <section className="panel diary-panel">
           <div className="section-heading">
@@ -604,11 +743,36 @@ function TodayPage(props: {
                   <input
                     type="checkbox"
                     checked={moment.done}
+                    disabled={Boolean(moment.sentTo)}
                     onChange={() =>
                       changeMoment(moment.id, { done: !moment.done })
                     }
                   />
-                  <span>{moment.text}</span>
+                  <span>
+                    {moment.text}
+                    {moment.sentTo && (
+                      <small className="sent-label">
+                        {sentStatus(moment.sentTo, moment.sentAt)}
+                      </small>
+                    )}
+                  </span>
+                  {!moment.done && (
+                    <button
+                      className="record-edit-button"
+                      onClick={() => setSelectedEdit({ kind: "moment", item: moment })}
+                    >
+                      编辑
+                    </button>
+                  )}
+                  <button
+                    className="record-send-button"
+                    disabled={Boolean(moment.sentTo)}
+                    onClick={() =>
+                      setSelectedRecord({ item: moment, source: "moment" })
+                    }
+                  >
+                    发送
+                  </button>
                   <button
                     className="icon-button"
                     onMouseDown={(event) => event.preventDefault()}
@@ -648,9 +812,34 @@ function TodayPage(props: {
                   <input
                     type="checkbox"
                     checked={task.done}
+                    disabled={Boolean(task.sentTo)}
                     onChange={() => changeTask(task.id, { done: !task.done })}
                   />
-                  <span>{task.text}</span>
+                  <span>
+                    {task.text}
+                    {task.sentTo && (
+                      <small className="sent-label">
+                        {sentStatus(task.sentTo, task.sentAt)}
+                      </small>
+                    )}
+                  </span>
+                  {!task.done && (
+                    <button
+                      className="record-edit-button"
+                      onClick={() => setSelectedEdit({ kind: "task", item: task })}
+                    >
+                      编辑
+                    </button>
+                  )}
+                  <button
+                    className="record-send-button"
+                    disabled={Boolean(task.sentTo)}
+                    onClick={() =>
+                      setSelectedRecord({ item: task, source: "task" })
+                    }
+                  >
+                    发送
+                  </button>
                   <button
                     className="icon-button"
                     onMouseDown={(event) => event.preventDefault()}
@@ -673,8 +862,250 @@ function TodayPage(props: {
           onDelete={deleteCache}
           onSend={sendCache}
         />
+        {selectedRecord && (
+          <RecordSendDialog
+            selection={selectedRecord}
+            onClose={() => setSelectedRecord(null)}
+            onSend={(target, date) => {
+              sendRecord(
+                selectedRecord.item,
+                selectedRecord.source,
+                target,
+                date,
+              );
+              setSelectedRecord(null);
+            }}
+          />
+        )}
+        {selectedEdit && (
+          <EditRecordDialog
+            selection={selectedEdit}
+            onClose={() => setSelectedEdit(null)}
+            onSave={(patch) => {
+              if (selectedEdit.kind === "moment") {
+                changeMoment(selectedEdit.item.id, patch as Partial<Moment>);
+              } else if (selectedEdit.kind === "task") {
+                changeTask(selectedEdit.item.id, patch as Partial<Task>);
+              } else {
+                changeCache(selectedEdit.item.id, patch as Partial<WorkCache>);
+              }
+              setSelectedEdit(null);
+            }}
+          />
+        )}
       </div>
     </section>
+  );
+}
+
+function RecordSendDialog({
+  selection,
+  onClose,
+  onSend,
+}: {
+  selection: SelectedRecord;
+  onClose: () => void;
+  onSend: (target: SendTarget, date: string) => void;
+}) {
+  const [target, setTarget] = useState<SendTarget>(selection.source);
+  const [date, setDate] = useState(() => dateKey(selection.item.createdAt));
+  return (
+    <div className="send-dialog-backdrop">
+      <div className="send-dialog" role="dialog" aria-modal="true">
+        <h3>发送记录</h3>
+        <label>
+          发送至
+          <select
+            value={target}
+            onChange={(event) => setTarget(event.target.value as SendTarget)}
+          >
+            <option value="moment">美好瞬间</option>
+            <option value="task">日常事务</option>
+          </select>
+        </label>
+        <label>
+          选择日期
+          <input
+            type="date"
+            value={date}
+            onChange={(event) => setDate(event.target.value)}
+          />
+        </label>
+        <div>
+          <button className="snooze-button" onClick={onClose}>
+            取消
+          </button>
+          <button
+            className="primary-button"
+            disabled={!date}
+            onClick={() => onSend(target, date)}
+          >
+            确认发送
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CacheSendDialog({
+  item,
+  onClose,
+  onSend,
+}: {
+  item: WorkCache;
+  onClose: () => void;
+  onSend: (target: SendTarget, date: string) => void;
+}) {
+  const [target, setTarget] = useState<SendTarget>("task");
+  const [date, setDate] = useState(() => dateKey(item.createdAt));
+  return (
+    <div className="send-dialog-backdrop">
+      <div className="send-dialog" role="dialog" aria-modal="true">
+        <h3>发送工作缓存</h3>
+        <label>
+          发送至
+          <select
+            value={target}
+            onChange={(event) => setTarget(event.target.value as SendTarget)}
+          >
+            <option value="task">日常事务</option>
+            <option value="moment">美好瞬间</option>
+          </select>
+        </label>
+        <label>
+          选择日期
+          <input
+            type="date"
+            value={date}
+            onChange={(event) => setDate(event.target.value)}
+          />
+        </label>
+        <div>
+          <button className="snooze-button" onClick={onClose}>
+            取消
+          </button>
+          <button
+            className="primary-button"
+            disabled={!date}
+            onClick={() => onSend(target, date)}
+          >
+            确认发送
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditRecordDialog({
+  selection,
+  onClose,
+  onSave,
+}: {
+  selection: EditSelection;
+  onClose: () => void;
+  onSave: (patch: Partial<Moment> | Partial<Task> | Partial<WorkCache>) => void;
+}) {
+  const isCache = selection.kind === "cache";
+  const [text, setText] = useState(
+    isCache ? selection.item.completed : selection.item.text,
+  );
+  const [pending, setPending] = useState(
+    isCache ? selection.item.pending : "",
+  );
+  return (
+    <div className="send-dialog-backdrop">
+      <div className="send-dialog edit-dialog" role="dialog" aria-modal="true">
+        <h3>编辑{isCache ? "工作缓存" : selection.kind === "moment" ? "美好瞬间" : "日常事务"}</h3>
+        <label>
+          {isCache ? "已完成" : "内容"}
+          <textarea value={text} onChange={(event) => setText(event.target.value)} />
+        </label>
+        {isCache && (
+          <label>
+            待完成
+            <textarea value={pending} onChange={(event) => setPending(event.target.value)} />
+          </label>
+        )}
+        <div>
+          <button className="snooze-button" onClick={onClose}>
+            取消
+          </button>
+          <button
+            className="primary-button"
+            disabled={!text.trim() && !pending.trim()}
+            onClick={() =>
+              onSave(
+                isCache
+                  ? { completed: text.trim(), pending: pending.trim() }
+                  : { text: text.trim() },
+              )
+            }
+          >
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AddTimelineRecordDialog({
+  kind,
+  date,
+  onClose,
+  onSave,
+}: {
+  kind: NewRecordKind;
+  date: string;
+  onClose: () => void;
+  onSave: (text: string, pending: string) => void;
+}) {
+  const [text, setText] = useState("");
+  const [pending, setPending] = useState("");
+  const title =
+    kind === "moment"
+      ? "美好瞬间"
+      : kind === "task"
+        ? "日常事务"
+        : "工作缓存";
+  return (
+    <div className="send-dialog-backdrop">
+      <div className="send-dialog edit-dialog" role="dialog" aria-modal="true">
+        <h3>添加{title}</h3>
+        <label>
+          {kind === "cache" ? "已完成" : "内容"}
+          <textarea
+            value={text}
+            autoFocus
+            onChange={(event) => setText(event.target.value)}
+          />
+        </label>
+        {kind === "cache" && (
+          <label>
+            待完成
+            <textarea
+              value={pending}
+              onChange={(event) => setPending(event.target.value)}
+            />
+          </label>
+        )}
+        <small>记录日期：{date}</small>
+        <div>
+          <button className="snooze-button" onClick={onClose}>
+            取消
+          </button>
+          <button
+            className="primary-button"
+            disabled={!text.trim() && !pending.trim()}
+            onClick={() => onSave(text.trim(), pending.trim())}
+          >
+            添加
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -991,11 +1422,46 @@ function ReflectionWindow() {
 
 function TimelinePanel({
   data,
+  sendRecord,
+  sendCache,
+  deleteMoment,
+  deleteTask,
+  deleteCache,
+  changeMoment,
+  changeTask,
+  changeCache,
+  addTimelineRecord,
 }: {
   data: AppData;
+  sendRecord: (
+    item: SendableRecord,
+    source: SendTarget,
+    target: SendTarget,
+    date: string,
+  ) => void;
+  sendCache: (item: WorkCache, target: SendTarget, date: string) => void;
+  deleteMoment: (id: string) => void;
+  deleteTask: (id: string) => void;
+  deleteCache: (id: string) => void;
+  changeMoment: (id: string, patch: Partial<Moment>) => void;
+  changeTask: (id: string, patch: Partial<Task>) => void;
+  changeCache: (id: string, patch: Partial<WorkCache>) => void;
+  addTimelineRecord: (
+    kind: NewRecordKind,
+    date: string,
+    text: string,
+    pending?: string,
+  ) => void;
 }) {
   const [date, setDate] = useState(dateKey());
   const [month, setMonth] = useState(dateKey().slice(0, 7));
+  const [selectedRecord, setSelectedRecord] = useState<SelectedRecord | null>(
+    null,
+  );
+  const [selectedCache, setSelectedCache] = useState<WorkCache | null>(null);
+  const [selectedEdit, setSelectedEdit] = useState<EditSelection | null>(null);
+  const [newRecordKind, setNewRecordKind] = useState<NewRecordKind | null>(null);
+  const targetDate = date === "全部" ? dateKey() : date;
   const recordDates = new Set(
     [...data.moments, ...data.tasks, ...data.workCache].map((item) =>
       dateKey(item.createdAt),
@@ -1075,18 +1541,53 @@ function TimelinePanel({
           )}
         </div>
       </div>
+      <div className="timeline-add-actions">
+        <button onClick={() => setNewRecordKind("moment")}>添加美好瞬间</button>
+        <button onClick={() => setNewRecordKind("task")}>添加日常事务</button>
+        <button onClick={() => setNewRecordKind("cache")}>添加工作缓存</button>
+      </div>
       
-      {moments.map((moment) => (
-        <article className="moment-card" key={moment.id}>
-          <time>
-            美好瞬间 · {new Date(moment.createdAt).toLocaleString("zh-CN")}
-          </time>
-          <p className={moment.done ? "task-done" : ""}>
-            {moment.done ? "✓ " : "○ "}
-            {moment.text}
-          </p>
+      {moments.length > 0 && (
+        <article className="moment-card timeline-tasks">
+          <time>美好瞬间</time>
+          {moments.map((moment) => (
+            <p className={moment.done ? "task-done" : ""} key={moment.id}>
+              {moment.done ? "✓" : "○"} {moment.text}{" "}
+              <small>{new Date(moment.createdAt).toLocaleString("zh-CN")}</small>
+              {moment.sentTo && (
+                <small className="sent-label">
+                  {sentStatus(moment.sentTo, moment.sentAt)}
+                </small>
+              )}
+              {!moment.done && (
+                <button
+                  className="record-edit-button"
+                  onClick={() => setSelectedEdit({ kind: "moment", item: moment })}
+                >
+                  编辑
+                </button>
+              )}
+              <button
+                className="record-send-button"
+                disabled={Boolean(moment.sentTo)}
+                onClick={() =>
+                  setSelectedRecord({ item: moment, source: "moment" })
+                }
+              >
+                发送
+              </button>
+              <button
+                className="icon-button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => deleteMoment(moment.id)}
+                aria-label="删除美好瞬间"
+              >
+                <Trash2 size={15} />
+              </button>
+            </p>
+          ))}
         </article>
-      ))}
+      )}
       {tasks.length > 0 && (
         <article className="moment-card timeline-tasks">
           <time>日常事务</time>
@@ -1094,6 +1595,34 @@ function TimelinePanel({
             <p className={task.done ? "task-done" : ""} key={task.id}>
               {task.done ? "✓" : "○"} {task.text}{" "}
               <small>{new Date(task.createdAt).toLocaleString("zh-CN")}</small>
+              {task.sentTo && (
+                <small className="sent-label">
+                  {sentStatus(task.sentTo, task.sentAt)}
+                </small>
+              )}
+              {!task.done && (
+                <button
+                  className="record-edit-button"
+                  onClick={() => setSelectedEdit({ kind: "task", item: task })}
+                >
+                  编辑
+                </button>
+              )}
+              <button
+                className="record-send-button"
+                disabled={Boolean(task.sentTo)}
+                onClick={() => setSelectedRecord({ item: task, source: "task" })}
+              >
+                发送
+              </button>
+              <button
+                className="icon-button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => deleteTask(task.id)}
+                aria-label="删除日常事务"
+              >
+                <Trash2 size={15} />
+              </button>
             </p>
           ))}
         </article>
@@ -1108,12 +1637,93 @@ function TimelinePanel({
               <small>
                 保存于 {new Date(item.createdAt).toLocaleString("zh-CN")}
               </small>
+              {item.sentTo && (
+                <small className="sent-label">
+                  {sentStatus(item.sentTo, item.sentAt)}
+                </small>
+              )}
+              {!item.done && (
+                <button
+                  className="record-edit-button"
+                  onClick={() => setSelectedEdit({ kind: "cache", item })}
+                >
+                  编辑
+                </button>
+              )}
+              {!item.sentTo && (
+                <button
+                  className="record-send-button"
+                  onClick={() => setSelectedCache(item)}
+                >
+                  发送
+                </button>
+              )}
+              <button
+                className="icon-button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => deleteCache(item.id)}
+                aria-label="删除工作缓存"
+              >
+                <Trash2 size={15} />
+              </button>
             </p>
           ))}
         </article>
       )}
       {moments.length === 0 && tasks.length === 0 && workCache.length === 0 && (
         <p className="empty large-empty">这一天还没有记录。</p>
+      )}
+      {selectedRecord && (
+        <RecordSendDialog
+          selection={selectedRecord}
+          onClose={() => setSelectedRecord(null)}
+          onSend={(target, targetDate) => {
+            sendRecord(
+              selectedRecord.item,
+              selectedRecord.source,
+              target,
+              targetDate,
+            );
+            setSelectedRecord(null);
+          }}
+        />
+      )}
+      {selectedCache && (
+        <CacheSendDialog
+          item={selectedCache}
+          onClose={() => setSelectedCache(null)}
+          onSend={(target, targetDate) => {
+            sendCache(selectedCache, target, targetDate);
+            setSelectedCache(null);
+          }}
+        />
+      )}
+      {selectedEdit && (
+        <EditRecordDialog
+          selection={selectedEdit}
+          onClose={() => setSelectedEdit(null)}
+          onSave={(patch) => {
+            if (selectedEdit.kind === "moment") {
+              changeMoment(selectedEdit.item.id, patch as Partial<Moment>);
+            } else if (selectedEdit.kind === "task") {
+              changeTask(selectedEdit.item.id, patch as Partial<Task>);
+            } else {
+              changeCache(selectedEdit.item.id, patch as Partial<WorkCache>);
+            }
+            setSelectedEdit(null);
+          }}
+        />
+      )}
+      {newRecordKind && (
+        <AddTimelineRecordDialog
+          kind={newRecordKind}
+          date={targetDate}
+          onClose={() => setNewRecordKind(null)}
+          onSave={(text, pending) => {
+            addTimelineRecord(newRecordKind, targetDate, text, pending);
+            setNewRecordKind(null);
+          }}
+        />
       )}
     </section>
   );

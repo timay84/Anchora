@@ -12,13 +12,22 @@ export type ParsedDailyRecords = {
 };
 
 export function dateKey(value: string | Date = new Date()) {
-  return typeof value === "string"
-    ? value.slice(0, 10)
-    : value.toISOString().slice(0, 10);
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+  const date = typeof value === "string" ? new Date(value) : value;
+  if (Number.isNaN(date.getTime())) return "";
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function savedAt(value: string) {
-  return `${value.slice(0, 10)} ${value.slice(11, 16)}`;
+  const date = new Date(value);
+  return `${dateKey(date)} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function sentRecordSuffix(sentTo?: "moment" | "task", sentAt?: string) {
+  if (!sentTo || !sentAt) return "";
+  return `（已转为${sentTo === "moment" ? "美好瞬间" : "日常事务"}，发送于 ${savedAt(sentAt)}）`;
 }
 
 export function dailyFileName(date: string) {
@@ -47,7 +56,7 @@ export function formatDailyNote(
     ? dayMoments
         .map(
           (moment) =>
-            `- [${moment.done ? "x" : " "}] ${checklistText(moment.text)}（保存于 ${savedAt(moment.createdAt)}）`,
+          `- [${moment.done ? "x" : " "}] ${checklistText(moment.text)}（保存于 ${savedAt(moment.createdAt)}）${sentRecordSuffix(moment.sentTo, moment.sentAt)}`,
         )
         .join("\n")
     : "- [ ] 尚未记录。";
@@ -55,7 +64,7 @@ export function formatDailyNote(
     ? dayTasks
         .map(
           (task) =>
-            `- [${task.done ? "x" : " "}] ${checklistText(task.text)}（保存于 ${savedAt(task.createdAt)}）`,
+          `- [${task.done ? "x" : " "}] ${checklistText(task.text)}（保存于 ${savedAt(task.createdAt)}）${sentRecordSuffix(task.sentTo, task.sentAt)}`,
         )
         .join("\n")
     : "- [ ] 尚未记录。";
@@ -84,10 +93,15 @@ export function parseDailyNote(
   const cacheSection = record.content.split("## 工作缓存区")[1] || "";
   const parseItem = (line: string) =>
     line.match(
-      /^- \[([ xX])\] (.+?)(?:（保存于 (\d{4}-\d{2}-\d{2} \d{2}:\d{2})）)?$/,
+      /^- \[([ xX])\] (.+?)(?:（保存于 (\d{4}-\d{2}-\d{2} \d{2}:\d{2})）)?(?:（已转为(美好瞬间|日常事务)，发送于 (\d{4}-\d{2}-\d{2} \d{2}:\d{2})）)?$/,
     );
-  const createdAt = (value?: string) =>
-    `${value || `${record.date} 12:00`}:00.000Z`.replace(" ", "T");
+  const createdAt = (value?: string) => {
+    const localValue = value || `${record.date} 12:00`;
+    const parsed = new Date(`${localValue.replace(" ", "T")}:00`);
+    return Number.isNaN(parsed.getTime())
+      ? new Date().toISOString()
+      : parsed.toISOString();
+  };
   const moments = momentSection
     .split("\n")
     .map((line, index) => {
@@ -98,6 +112,12 @@ export function parseDailyNote(
         text: match[2],
         done: match[1].toLowerCase() === "x",
         createdAt: createdAt(match[3]),
+        ...(match[4]
+          ? {
+              sentTo: match[4] === "美好瞬间" ? ("moment" as const) : ("task" as const),
+              sentAt: createdAt(match[5]),
+            }
+          : {}),
       };
     })
     .filter((moment): moment is Moment => moment !== null);
@@ -111,6 +131,12 @@ export function parseDailyNote(
         text: match[2],
         done: match[1].toLowerCase() === "x",
         createdAt: createdAt(match[3]),
+        ...(match[4]
+          ? {
+              sentTo: match[4] === "美好瞬间" ? ("moment" as const) : ("task" as const),
+              sentAt: createdAt(match[5]),
+            }
+          : {}),
       };
     })
     .filter((task): task is Task => task !== null);

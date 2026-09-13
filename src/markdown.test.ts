@@ -86,4 +86,38 @@ describe("daily Markdown vault format", () => {
     expect(parsed.workCache[0].pending).toBe("联系客户");
     expect(parsed.workCache[0].sentTo).toBe("task");
   });
+
+  it("persists and restores forwarded moment and task status", () => {
+    const parsed = parseDailyNote({
+      date: "2026-09-13",
+      path: "2026-09-13.md",
+      content: formatDailyNote(
+        "2026-09-13",
+        [
+          {
+            id: "m1",
+            text: "瞬间",
+            done: true,
+            createdAt: "2026-09-13T08:00:00.000Z",
+            sentTo: "task",
+            sentAt: "2026-09-13T09:02:00.000Z",
+          },
+        ],
+        [
+          {
+            id: "t1",
+            text: "事务",
+            done: true,
+            createdAt: "2026-09-13T09:00:00.000Z",
+            sentTo: "moment",
+            sentAt: "2026-09-13T10:02:00.000Z",
+          },
+        ],
+      ),
+    });
+    expect(parsed.moments[0].sentTo).toBe("task");
+    expect(parsed.moments[0].sentAt).toBeTruthy();
+    expect(parsed.tasks[0].sentTo).toBe("moment");
+    expect(parsed.tasks[0].sentAt).toBeTruthy();
+  });
 });

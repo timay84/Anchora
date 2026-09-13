@@ -198,6 +198,9 @@ h2 {
   grid-template-columns: minmax(0, 1.6fr) minmax(250px, 0.8fr);
   gap: 22px;
 }
+.today-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
 .main-column,
 .right-column {
   display: grid;
@@ -308,6 +311,11 @@ textarea::placeholder {
 .setting-row input {
   accent-color: #6c8b63;
 }
+.task-row input:disabled {
+  cursor: default;
+  filter: grayscale(1);
+  opacity: 0.65;
+}
 .task-row svg {
   margin-left: auto;
   color: #bfd0c5;
@@ -320,6 +328,33 @@ textarea::placeholder {
 .task-done span {
   text-decoration: line-through;
   color: #a9b5ae;
+}
+.record-send-button,
+.record-edit-button {
+  flex-shrink: 0;
+  padding: 4px 7px;
+  border: 1px solid #dce5dc;
+  border-radius: 6px;
+  color: #607b6a;
+  background: transparent;
+  font-size: 10px;
+}
+.record-send-button:hover,
+.record-edit-button:hover {
+  color: #243d36;
+  background: #e5eee2;
+}
+.record-send-button:disabled,
+.record-edit-button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.sent-label {
+  display: inline;
+  margin-left: 6px;
+  color: #98a69f;
+  font-size: 10px;
+  font-weight: 400;
 }
 .empty {
   color: #a2afa8;
@@ -334,7 +369,7 @@ textarea::placeholder {
 .focus-control {
   display: grid;
   gap: 10px;
-  margin-top: auto;
+  margin-top: 20px;
   padding: 15px;
   border: 1px solid #3a594f;
   border-radius: 12px;
@@ -761,9 +796,16 @@ input[type="range"] {
   opacity: 0.45;
 }
 .timeline-tasks p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 9px 0 0;
   font-family: "DM Sans", sans-serif;
   font-size: 13px;
+}
+.timeline-tasks .icon-button {
+  flex-shrink: 0;
+  margin-left: auto;
 }
 .history-panel > .export-button {
   margin: 10px 0 14px;
@@ -774,6 +816,24 @@ input[type="range"] {
   border: 1px solid #e5eae3;
   border-radius: 12px;
   background: #f6f8f4;
+}
+.timeline-add-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -10px 0 20px;
+}
+.timeline-add-actions button {
+  padding: 7px 10px;
+  border: 1px solid #dce5dc;
+  border-radius: 7px;
+  color: #607b6a;
+  background: #f6f8f4;
+  font-size: 11px;
+}
+.timeline-add-actions button:hover {
+  color: #243d36;
+  background: #e5eee2;
 }
 .calendar-header {
   display: flex;
@@ -847,6 +907,9 @@ input[type="range"] {
 .timeline-tasks small {
   color: #98a69f;
   font-size: 10px;
+}
+.timeline-tasks .record-send-button {
+  margin-left: 6px;
 }
 .timer-note {
   color: #8b9a94;

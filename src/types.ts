@@ -3,12 +3,16 @@ export type Task = {
   text: string;
   done: boolean;
   createdAt: string;
+  sentTo?: "moment" | "task";
+  sentAt?: string;
 };
 export type Moment = {
   id: string;
   text: string;
   done: boolean;
   createdAt: string;
+  sentTo?: "moment" | "task";
+  sentAt?: string;
 };
 export type WorkCache = {
   id: string;
