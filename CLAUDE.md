@@ -17,6 +17,7 @@ Anchora is a local-first Tauri 2 desktop app for mindful productivity. The two p
 - `npm run build`: type-check and build the frontend.
 - `npm test`: run Vitest tests.
 - `npm run tauri dev`: run the complete desktop app (requires Rust and platform prerequisites).
+- `npm run tauri build -- --target aarch64-pc-windows-msvc --bundles nsis,msi`: build Windows on ARM64 installers.
 
 ## Implementation rules
 
@@ -30,3 +31,11 @@ Anchora is a local-first Tauri 2 desktop app for mindful productivity. The two p
 ## Verification
 
 Run `npm test` and `npm run build` before submitting UI changes. Run `cargo check` from `src-tauri` on a machine with Rust installed before changing native commands.
+
+## Windows packaging
+
+- Product name is `Anchora`; the stable application identifier is `com.timay84.anchora`.
+- Installer targets are `nsis` (`.exe`) and `msi` (`.msi`), configured in `src-tauri/tauri.conf.json`.
+- Icons are stored in `src-tauri/icons/`; the Windows installer uses `icons/icon.ico` and the PNG sizes listed in the configuration.
+- For Windows on ARM64, install the Rust target once with `rustup target add aarch64-pc-windows-msvc`, then run the ARM64 build command above from the repository root.
+- The ARM64 build requires Visual Studio Build Tools with the MSVC ARM64 toolchain and Windows SDK. Artifacts are written under `src-tauri/target/aarch64-pc-windows-msvc/release/bundle/`.

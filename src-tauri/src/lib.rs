@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::fs;
-use tauri::{menu::{MenuBuilder, MenuItemBuilder}, tray::TrayIconBuilder, AppHandle, Manager, WebviewWindowBuilder, WebviewUrl};
+use tauri::{menu::{MenuBuilder, MenuItemBuilder}, tray::TrayIconBuilder, AppHandle, Manager};
 
 #[derive(Serialize)]
 struct MonitorInfo { name: Option<String>, width: u32, height: u32, x: i32, y: i32 }
