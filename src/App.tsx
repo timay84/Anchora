@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Check, Clock3, Hash, History, Leaf, Menu, Play, Plus, Settings, Sparkles, SquareCheckBig, X } from 'lucide-react';
+import { Check, Clock3, Hash, History, Leaf, Menu, Plus, Settings, Sparkles, SquareCheckBig, X } from 'lucide-react';
 import { defaultData, AppData } from './types';
 import { loadData, saveData } from './storage';
 
@@ -63,7 +63,6 @@ export function App() {
       <div className="brand"><span className="brand-mark"><Leaf size={18} /></span><span>anchora</span></div>
       <p className="eyebrow">你的专注港湾</p>
       <nav>{([['today', Sparkles, '今日'], ['history', History, '时间轴'], ['settings', Settings, '设置']] as const).map(([id, Icon, label]) => <button key={id} className={page === id ? 'nav-active' : ''} onClick={() => { setPage(id); setMenu(false); }}><Icon size={17} />{label}</button>)}</nav>
-      <div className="focus-card"><p>下一次觉察</p><strong>{remaining ? formatTime(remaining) : '未安排'}</strong><button onClick={remaining ? () => setRemaining(0) : startFocus}>{remaining ? '结束专注' : <><Play size={14} fill="currentColor" />开始 20 分钟</>}</button></div>
       <p className="sidebar-footer">本地存储 · 私密安全</p>
     </aside>
     <main><header><button className="menu-button" onClick={() => setMenu(v => !v)}><Menu size={20} /></button><div><p className="date-label">{new Date().toLocaleDateString('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' })}</p><h1>{page === 'today' ? '在场，胜过完成。' : page === 'history' ? '回望你的轨迹。' : '调整你的节奏。'}</h1></div><div className="header-status"><span className="status-dot" />自动保存中</div></header>
