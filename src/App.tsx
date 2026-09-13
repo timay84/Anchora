@@ -63,6 +63,7 @@ export function App() {
   const [menu, setMenu] = useState(false);
   const [now, setNow] = useState(Date.now());
   const syncTimer = useRef<number | undefined>(undefined);
+  const skipNextVaultRead = useRef(false);
   const update = (patch: Partial<AppData>) =>
     setData((current) => ({ ...current, ...patch }));
   const session = data.focusSession;
@@ -86,6 +87,10 @@ export function App() {
   useEffect(() => saveData(data), [data]);
   useEffect(() => {
     if (!data.settings.vaultPath) return;
+    if (skipNextVaultRead.current) {
+      skipNextVaultRead.current = false;
+      return;
+    }
     void invoke<DailyMarkdownRecord[]>("read_daily_notes", {
       vaultPath: data.settings.vaultPath,
     })
@@ -407,12 +412,24 @@ export function App() {
       title: "选择 Obsidian Vault 文件夹",
     });
     if (typeof selected !== "string") return;
-    const next = {
-      ...data,
-      settings: { ...data.settings, vaultPath: selected },
-    };
-    update({ settings: next.settings });
-    syncDates(selected, next, [dateKey()]);
+    try {
+      const notes = await invoke<DailyMarkdownRecord[]>("read_daily_notes", {
+        vaultPath: selected,
+      });
+      const imported = mergeParsedRecords(notes);
+      const next = {
+        ...data,
+        moments: [...data.moments, ...imported.moments],
+        tasks: [...data.tasks, ...imported.tasks],
+        workCache: [...data.workCache, ...imported.workCache],
+        settings: { ...data.settings, vaultPath: selected },
+      };
+      skipNextVaultRead.current = true;
+      setData(next);
+      syncDates(selected, next, [dateKey()]);
+    } catch {
+      // Do not switch Vault or overwrite its files when the initial read fails.
+    }
   };
   const startFocus = () => {
     const start = new Date();

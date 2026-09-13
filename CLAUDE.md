@@ -27,6 +27,8 @@ Anchora is a local-first Tauri 2 desktop app for mindful productivity. Its recor
 - Calculate focus, reflection, and lock deadlines from the session's persisted timestamps; snapshot the user settings when a session starts.
 - Persist forwarding metadata (`sentTo` and `sentAt`) for moments and tasks, preserve the original record, and mark forwarded records complete and non-editable.
 - Use the computer's local timezone for record dates and display times; Markdown serialization and parsing must preserve forwarding metadata.
+- Moments, tasks, and work caches may be copied to any record type, including the same type, with a selectable target date; the source remains marked as forwarded.
+- Timeline Vault reconnects must read the new Vault before writing, merge local and Vault records, and never overwrite an existing daily note before it has been imported.
 - Native functionality belongs behind Tauri commands in `src-tauri/src/lib.rs`; the UI must tolerate browser/Vite mode where `invoke` is unavailable.
 - Use React components for feature boundaries and Tailwind utilities only when they improve readability; shared visual tokens live in `src/styles.css`.
 - Any new persisted field needs a safe default and a storage test.
