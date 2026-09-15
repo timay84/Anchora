@@ -14,10 +14,16 @@ export function loadData(): AppData {
             const { tags: _tags, ...cleanMoment } = moment as typeof moment & {
               tags?: string[];
             };
-            return { ...cleanMoment, done: moment.done ?? false };
+            return {
+              ...cleanMoment,
+              done: moment.done ?? false,
+              status: moment.status ?? "Idle",
+            };
           })
         : [],
-      tasks: Array.isArray(stored.tasks) ? stored.tasks : [],
+      tasks: Array.isArray(stored.tasks)
+        ? stored.tasks.map((task) => ({ ...task, status: task.status ?? "Idle" }))
+        : [],
       workCache: Array.isArray(stored.workCache)
         ? stored.workCache.map((item) => ({
             ...item,
@@ -25,6 +31,8 @@ export function loadData(): AppData {
           }))
         : [],
       focusSession: stored.focusSession || null,
+      timeBlocks: Array.isArray(stored.timeBlocks) ? stored.timeBlocks : [],
+      timeBlocksDate: typeof stored.timeBlocksDate === "string" ? stored.timeBlocksDate : "",
       settings: (() => {
         const { privacyLock: _privacyLock, ...cleanSettings } = (stored.settings || {}) as typeof defaultData.settings & {
           privacyLock?: boolean;

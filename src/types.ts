@@ -1,8 +1,12 @@
+export type RecordStatus = "Idle" | "Focusing" | "Paused";
+
 export type Task = {
   id: string;
   text: string;
   done: boolean;
   createdAt: string;
+  status: RecordStatus;
+  timeBlockId?: string;
   sentTo?: "moment" | "task";
   sentAt?: string;
 };
@@ -11,6 +15,8 @@ export type Moment = {
   text: string;
   done: boolean;
   createdAt: string;
+  status: RecordStatus;
+  timeBlockId?: string;
   sentTo?: "moment" | "task";
   sentAt?: string;
 };
@@ -47,6 +53,8 @@ export type AppData = {
   draft: string;
   settings: Settings;
   focusSession: FocusSession | null;
+  timeBlocks: import("./markdown").MarkdownTimeBlock[];
+  timeBlocksDate: string;
 };
 
 export const defaultData: AppData = {
@@ -55,6 +63,8 @@ export const defaultData: AppData = {
   workCache: [],
   draft: "",
   focusSession: null,
+  timeBlocks: [],
+  timeBlocksDate: "",
   settings: {
     focusMinutes: 17,
     reflectionMinutes: 3,

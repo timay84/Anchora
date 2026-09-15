@@ -16,14 +16,18 @@ import {
   SquareCheckBig,
   Trash2,
 } from "lucide-react";
-import { AppData, FocusPhase, Moment, Task, WorkCache } from "./types";
+import { AppData, FocusPhase, Moment, RecordStatus, Task, WorkCache } from "./types";
 import {
+  createDailyMarkdownAst,
   dateKey,
   DailyMarkdownRecord,
   formatDailyNote,
   mergeParsedRecords,
+  parseDailyMarkdown,
+  serializeDailyMarkdown,
 } from "./markdown";
 import { loadData, saveData } from "./storage";
+import { DEFAULT_TIME_BLOCKS } from "./time-blocks";
 
 type Page = "today" | "history" | "settings";
 type SendTarget = "moment" | "task";
@@ -48,6 +52,56 @@ function sentStatus(target?: SendTarget, sentAt?: string) {
   return `已转为${target === "moment" ? "美好瞬间" : "日常事务"}，发送于 ${new Date(sentAt).toLocaleString("zh-CN")}`;
 }
 
+function defaultTimeBlocks(date: string) {
+  return createDailyMarkdownAst(date, DEFAULT_TIME_BLOCKS).timeBlocks;
+}
+
+function recordsFromTimeBlocks(date: string, blocks: AppData["timeBlocks"]) {
+  const moments: Moment[] = [];
+  const tasks: Task[] = [];
+  blocks.forEach((block) => {
+    const defaultKind: "moment" | "task" = block.categories.includes("美好瞬间")
+      ? "moment"
+      : "task";
+    block.items.forEach((item) => {
+      const kind = item.kind || defaultKind;
+      const record = {
+        id: item.id,
+        text: item.text,
+        done: item.done,
+        status: "Idle" as const,
+        timeBlockId: block.id,
+        createdAt: new Date(`${date}T12:00:00`).toISOString(),
+      };
+      if (kind === "moment") moments.push(record);
+      else tasks.push(record);
+    });
+  });
+  return { moments, tasks };
+}
+
+function mergeRecordsIntoTimeBlocks(
+  date: string,
+  blocks: AppData["timeBlocks"],
+  moments: Moment[],
+  tasks: Task[],
+) {
+  const next = blocks.map((block) => ({ ...block, items: [...block.items] }));
+  [...moments.map((item) => ({ ...item, kind: "moment" as const })), ...tasks.map((item) => ({ ...item, kind: "task" as const }))]
+    .filter((item) => dateKey(item.createdAt) === date)
+    .forEach((record) => {
+      if (next.some((block) => block.items.some((item) => item.id === record.id))) return;
+      const hour = new Date(record.createdAt).getHours() * 60 + new Date(record.createdAt).getMinutes();
+      const target = next.find((block) => {
+        const start = Number(block.startTime.slice(0, 2)) * 60 + Number(block.startTime.slice(3));
+        const end = Number(block.endTime.slice(0, 2)) * 60 + Number(block.endTime.slice(3));
+        return hour >= start && hour < end && block.categories.includes(record.kind === "moment" ? "美好瞬间" : "日常事务");
+      }) || next.find((block) => block.categories.includes(record.kind === "moment" ? "美好瞬间" : "日常事务")) || next[0];
+      if (target) target.items.push({ id: record.id, text: record.text, done: record.done, kind: record.kind });
+    });
+  return next;
+}
+
 export function App() {
   const isReflectionWindow =
     typeof window !== "undefined" &&
@@ -57,7 +111,15 @@ export function App() {
     ) &&
     getCurrentWindow().label === "reflection";
   if (isReflectionWindow) return <ReflectionWindow />;
-  const [data, setData] = useState<AppData>(loadData);
+  const [data, setData] = useState<AppData>(() => {
+    const loaded = loadData();
+    if (loaded.timeBlocksDate === dateKey()) return loaded;
+    return {
+      ...loaded,
+      timeBlocks: mergeRecordsIntoTimeBlocks(dateKey(), defaultTimeBlocks(dateKey()), loaded.moments, loaded.tasks),
+      timeBlocksDate: dateKey(),
+    };
+  });
   const [page, setPage] = useState<Page>("today");
   const [taskText, setTaskText] = useState("");
   const [menu, setMenu] = useState(false);
@@ -95,8 +157,36 @@ export function App() {
       vaultPath: data.settings.vaultPath,
     })
       .then((notes) => {
-        if (notes.length)
-          setData((current) => ({ ...current, ...mergeParsedRecords(notes) }));
+        const currentNote = notes.find((note) => note.date === dateKey());
+        const ast = currentNote
+          ? parseDailyMarkdown(currentNote)
+          : createDailyMarkdownAst(dateKey(), DEFAULT_TIME_BLOCKS);
+        const imported = mergeParsedRecords(notes);
+        const fromBlocks = recordsFromTimeBlocks(dateKey(), ast.timeBlocks);
+        setData((current) => {
+          const moments = [
+            ...current.moments,
+            ...imported.moments,
+            ...fromBlocks.moments.filter((item) => !current.moments.some((existing) => existing.id === item.id)),
+          ];
+          const tasks = [
+            ...current.tasks,
+            ...imported.tasks,
+            ...fromBlocks.tasks.filter((item) => !current.tasks.some((existing) => existing.id === item.id)),
+          ];
+          return {
+            ...current,
+            moments,
+            tasks,
+            timeBlocks: mergeRecordsIntoTimeBlocks(
+              dateKey(),
+              ast.timeBlocks.length ? ast.timeBlocks : defaultTimeBlocks(dateKey()),
+              moments,
+              tasks,
+            ),
+            timeBlocksDate: dateKey(),
+          };
+        });
       })
       .catch(() => undefined);
   }, [data.settings.vaultPath]);
@@ -181,12 +271,19 @@ export function App() {
         void invoke("write_daily_note", {
           vaultPath,
           date,
-          content: formatDailyNote(
-            date,
-            next.moments,
-            next.tasks,
-            next.workCache,
-          ),
+          content:
+            date === next.timeBlocksDate
+              ? serializeDailyMarkdown({
+                  date,
+                  preamble: "",
+                  timeBlocks: next.timeBlocks,
+                  workCache: next.workCache.map((item) => ({
+                    id: item.id,
+                    text: `已完成：${item.completed || "暂无记录"}；待完成：${item.pending || "暂无记录"}`,
+                    done: item.done,
+                  })),
+                })
+              : formatDailyNote(date, next.moments, next.tasks, next.workCache),
         }).catch(() => undefined),
     );
   };
@@ -211,6 +308,7 @@ export function App() {
           id: crypto.randomUUID(),
           text: data.draft.trim(),
           done: false,
+          status: "Idle",
           createdAt: new Date().toISOString(),
         },
         ...data.moments,
@@ -227,6 +325,7 @@ export function App() {
           id: crypto.randomUUID(),
           text: taskText.trim(),
           done: false,
+          status: "Idle",
           createdAt: new Date().toISOString(),
         },
         ...data.tasks,
@@ -248,6 +347,60 @@ export function App() {
         item.id === id ? { ...item, ...patch } : item,
       ),
     });
+  const addTimeBlockItem = (blockId: string, text: string, kind: "moment" | "task") => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const block = data.timeBlocks.find((item) => item.id === blockId);
+    if (!block) return;
+    const id = crypto.randomUUID();
+    const item = { id, text: trimmed, done: false, kind };
+    const record = { id, text: trimmed, done: false, status: "Idle" as const, timeBlockId: blockId, createdAt: new Date().toISOString() };
+    replaceData({
+      ...data,
+      timeBlocks: data.timeBlocks.map((current) => current.id === blockId ? { ...current, items: [...current.items, item] } : current),
+      moments: kind === "moment" ? [record, ...data.moments] : data.moments,
+      tasks: kind === "task" ? [record, ...data.tasks] : data.tasks,
+    });
+  };
+  const toggleTimeBlockItem = (blockId: string, itemId: string) => {
+    const block = data.timeBlocks.find((item) => item.id === blockId);
+    const item = block?.items.find((candidate) => candidate.id === itemId);
+    const record = [...data.moments, ...data.tasks].find((candidate) => candidate.id === itemId);
+    if (!item || !record || record.status && record.status !== "Idle") return;
+    const done = !item.done;
+    replaceData({
+      ...data,
+      timeBlocks: data.timeBlocks.map((current) => current.id === blockId ? { ...current, items: current.items.map((candidate) => candidate.id === itemId ? { ...candidate, done } : candidate) } : current),
+      moments: data.moments.map((candidate) => candidate.id === itemId ? { ...candidate, done } : candidate),
+      tasks: data.tasks.map((candidate) => candidate.id === itemId ? { ...candidate, done } : candidate),
+    });
+  };
+  const deleteTimeBlockItem = (blockId: string, itemId: string) => {
+    replaceData({
+      ...data,
+      timeBlocks: data.timeBlocks.map((block) => block.id === blockId ? { ...block, items: block.items.filter((item) => item.id !== itemId) } : block),
+      moments: data.moments.filter((item) => item.id !== itemId),
+      tasks: data.tasks.filter((item) => item.id !== itemId),
+    });
+  };
+  const moveTimeBlockItem = (itemId: string, targetBlockId: string, targetIndex?: number) => {
+    const source = data.timeBlocks.find((block) => block.items.some((item) => item.id === itemId));
+    const item = source?.items.find((candidate) => candidate.id === itemId);
+    const record = [...data.moments, ...data.tasks].find((candidate) => candidate.id === itemId);
+    if (!source || !item || !record || (record.status && record.status !== "Idle")) return;
+    const target = data.timeBlocks.find((block) => block.id === targetBlockId);
+    if (!target) return;
+    const nextBlocks = data.timeBlocks.map((block) => ({ ...block, items: block.items.filter((candidate) => candidate.id !== itemId) }));
+    const targetItems = nextBlocks.find((block) => block.id === targetBlockId)?.items || [];
+    const insertAt = targetIndex === undefined ? targetItems.length : Math.max(0, Math.min(targetIndex, targetItems.length));
+    targetItems.splice(insertAt, 0, item);
+    replaceData({
+      ...data,
+      timeBlocks: nextBlocks,
+      moments: data.moments.map((candidate) => candidate.id === itemId ? { ...candidate, timeBlockId: targetBlockId } : candidate),
+      tasks: data.tasks.map((candidate) => candidate.id === itemId ? { ...candidate, timeBlockId: targetBlockId } : candidate),
+    });
+  };
   const deleteMoment = (id: string) => {
     const item = data.moments.find((moment) => moment.id === id);
     if (!item) return;
@@ -308,6 +461,7 @@ export function App() {
                 id: crypto.randomUUID(),
                 text,
                 done: false,
+                status: "Idle" as const,
                 createdAt,
               },
               ...data.moments,
@@ -316,7 +470,7 @@ export function App() {
       tasks:
         target === "task"
           ? [
-              { id: crypto.randomUUID(), text, done: false, createdAt },
+              { id: crypto.randomUUID(), text, done: false, status: "Idle" as const, createdAt },
               ...data.tasks,
             ]
           : data.tasks,
@@ -341,6 +495,7 @@ export function App() {
       id: crypto.randomUUID(),
       text: item.text,
       done: false,
+      status: "Idle" as const,
       createdAt,
     };
     const moments =
@@ -383,11 +538,11 @@ export function App() {
       ...data,
       moments:
         kind === "moment"
-          ? [{ id: crypto.randomUUID(), text, done: false, createdAt }, ...data.moments]
+           ? [{ id: crypto.randomUUID(), text, done: false, status: "Idle" as const, createdAt }, ...data.moments]
           : data.moments,
       tasks:
         kind === "task"
-          ? [{ id: crypto.randomUUID(), text, done: false, createdAt }, ...data.tasks]
+           ? [{ id: crypto.randomUUID(), text, done: false, status: "Idle" as const, createdAt }, ...data.tasks]
           : data.tasks,
       workCache:
         kind === "cache"
@@ -638,21 +793,12 @@ export function App() {
           )}
         </header>
         {page === "today" && (
-          <TodayPage
+          <TimeBlockTodayPage
             data={data}
-            updateDraft={(draft) => update({ draft })}
-            taskText={taskText}
-            setTaskText={setTaskText}
-            addMoment={addMoment}
-            addTask={addTask}
-            changeMoment={changeMoment}
-            changeTask={changeTask}
-            deleteMoment={deleteMoment}
-            deleteTask={deleteTask}
-            changeCache={changeCache}
-            deleteCache={deleteCache}
-            sendCache={sendCache}
-            sendRecord={sendRecord}
+            onAddTimeBlockItem={addTimeBlockItem}
+            onToggleTimeBlockItem={toggleTimeBlockItem}
+            onDeleteTimeBlockItem={deleteTimeBlockItem}
+            onMoveTimeBlockItem={moveTimeBlockItem}
           />
         )}
         {page === "history" && (
@@ -685,6 +831,114 @@ export function App() {
         </div>
       )}
     </div>
+  );
+}
+
+function TimeBlockTodayPage({
+  data,
+  onAddTimeBlockItem,
+  onToggleTimeBlockItem,
+  onDeleteTimeBlockItem,
+  onMoveTimeBlockItem,
+}: {
+  data: AppData;
+  onAddTimeBlockItem: (blockId: string, text: string, kind: "moment" | "task") => void;
+  onToggleTimeBlockItem: (blockId: string, itemId: string) => void;
+  onDeleteTimeBlockItem: (blockId: string, itemId: string) => void;
+  onMoveTimeBlockItem: (itemId: string, blockId: string, index?: number) => void;
+}) {
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [kinds, setKinds] = useState<Record<string, "moment" | "task">>({});
+  const setDraft = (blockId: string, value: string) =>
+    setDrafts((current) => ({ ...current, [blockId]: value }));
+  const submit = (blockId: string) => {
+    onAddTimeBlockItem(blockId, drafts[blockId] || "", kinds[blockId] || "task");
+    setDraft(blockId, "");
+  };
+  const recordFor = (itemId: string) =>
+    [...data.moments, ...data.tasks].find((record) => record.id === itemId);
+  const dragStart = (event: React.DragEvent, itemId: string) => {
+    const record = recordFor(itemId);
+    if (!record || (record.status && record.status !== "Idle")) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.setData("text/plain", itemId);
+    event.dataTransfer.effectAllowed = "move";
+  };
+  const drop = (event: React.DragEvent, blockId: string, index?: number) => {
+    event.preventDefault();
+    const itemId = event.dataTransfer.getData("text/plain");
+    if (itemId) onMoveTimeBlockItem(itemId, blockId, index);
+  };
+  return (
+    <section className="time-block-grid" aria-label="今日时间块">
+      {data.timeBlocks.map((block) => {
+        const kind = kinds[block.id] || (block.categories.includes("美好瞬间") ? "moment" : "task");
+        return (
+          <article
+            className="time-block-card"
+            key={block.id}
+            style={{ backgroundImage: `linear-gradient(180deg, rgba(28, 48, 40, .12), rgba(28, 48, 40, .9)), url(${block.background || ""})` }}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => drop(event, block.id)}
+          >
+            <header className="time-block-card-header">
+              <div>
+                <span className="time-block-time">{block.startTime} - {block.endTime}</span>
+                <h2>{block.title}</h2>
+              </div>
+              <span className="time-block-category">{block.categories.join(" / ")}</span>
+            </header>
+            <div className="time-block-items">
+              {block.items.map((item, index) => {
+                const record = recordFor(item.id);
+                const status: RecordStatus = record?.status || "Idle";
+                const locked = status === "Focusing" || status === "Paused";
+                return (
+                  <div
+                    className={`time-block-item ${item.done ? "item-done" : ""} ${locked ? "item-locked" : ""}`}
+                    key={item.id}
+                    draggable={!locked}
+                    onDragStart={(event) => dragStart(event, item.id)}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => drop(event, block.id, index)}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={item.done}
+                      disabled={locked}
+                      onChange={() => onToggleTimeBlockItem(block.id, item.id)}
+                      aria-label={`完成${item.text}`}
+                    />
+                    <span className="time-block-item-text">{item.text}</span>
+                    {locked && <small className="item-status">{status}</small>}
+                    <button type="button" onClick={() => onDeleteTimeBlockItem(block.id, item.id)} aria-label={`删除${item.text}`}>
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="time-block-composer">
+              <input
+                value={drafts[block.id] || ""}
+                onChange={(event) => setDraft(block.id, event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") submit(block.id); }}
+                placeholder="添加项目..."
+              />
+              {block.categories.length > 1 && (
+                <select value={kind} onChange={(event) => setKinds((current) => ({ ...current, [block.id]: event.target.value as "moment" | "task" }))}>
+                  <option value="moment">瞬间</option>
+                  <option value="task">事务</option>
+                </select>
+              )}
+              <button type="button" onClick={() => submit(block.id)}><Plus size={15} /></button>
+            </div>
+          </article>
+        );
+      })}
+    </section>
   );
 }
 

@@ -1,58 +1,70 @@
-# Anchora Development Guide
+# Anchora V2 - 项目上下文与架构设计规范
 
-## Product shape
+> 本文档为 Anchora 项目的核心架构说明（针对 `v2-refactor` 分支）。所有 AI 开发助手在生成代码、修改状态机或操作 Markdown 解析前，必须严格遵守以下规范。
 
-Anchora is a local-first Tauri 2 desktop app for mindful productivity. Its records are mindful moments, daily tasks, and focus-session work caches. The timeline supports date-based browsing, creation, editing, deletion, and forwarding between record types.
+---
 
-## Repository layout
+## 1. 核心理念 (Core Philosophy)
+Anchora 是一款基于**生物钟对齐**、**认知负荷管理**与**时间块化**的桌面管理软件。
+核心闭环：`安排时间块 -> 专注执行 -> 独立复盘(不占执行时间) -> 强制锁屏休息 -> 沉淀至 Markdown 归档`。
 
-- `src/`: React + TypeScript UI, storage adapter, domain types, and styles.
-- `src-tauri/src/`: Rust commands, system tray setup, monitor discovery, and native file export.
-- `src-tauri/tauri.conf.json`: desktop window and build configuration.
-- `requirements.md`: product requirements and acceptance context.
+## 2. 数据层设计 (Data & Markdown Schema)
+软件的所有状态均与本地 Markdown 文件（格式：`YYYY-MM-DD(星期X).md`）进行**双向绑定 (Two-way Binding)**。
+- **全局模板**：预置 7 个标准时间块（存放在专门的配置项中）。
+- **今日实例**：当日的时间块增删改仅影响当天的 `.md` 文件。
+- **Markdown 结构约定 (AST 解析标准)**：
+  推荐使用层级结构进行读写：
+  ```markdown
+  ### [6:45~8:10] 清晨美好瞬间 (属性: 美好瞬间)
+  - [ ] 任务A
+  - [x] 任务B (用时18分钟完成)
+  - [x] 任务C (未完成, 已存缓存区)
 
-## Development commands
+  ### 工作缓存区
+  - 任务C的未完成总结内容...
 
-- `npm run dev`: start the Vite frontend.
-- `npm run build`: type-check and build the frontend.
-- `npm test`: run Vitest tests.
-- `npm run tauri dev`: run the complete desktop app (requires Rust and platform prerequisites).
-- `npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis,msi`: build Windows x64 installers.
-- `npm run tauri build -- --target aarch64-pc-windows-msvc --bundles nsis,msi`: build Windows on ARM64 installers.
+```
 
-## Implementation rules
+---
 
-- Keep user data local. Use the versioned `anchora:data:v1` storage key and extend `AppData` deliberately.
-- Keep timer/reminder controls non-blocking: always preserve snooze, end, close, summary save, and emergency lock-exit actions.
-- Calculate focus, reflection, and lock deadlines from the session's persisted timestamps; snapshot the user settings when a session starts.
-- Persist forwarding metadata (`sentTo` and `sentAt`) for moments and tasks, preserve the original record, and mark forwarded records complete and non-editable.
-- Use the computer's local timezone for record dates and display times; Markdown serialization and parsing must preserve forwarding metadata.
-- Moments, tasks, and work caches may be copied to any record type, including the same type, with a selectable target date; the source remains marked as forwarded.
-- Timeline Vault reconnects must read the new Vault before writing, merge local and Vault records, and never overwrite an existing daily note before it has been imported.
-- Native functionality belongs behind Tauri commands in `src-tauri/src/lib.rs`; the UI must tolerate browser/Vite mode where `invoke` is unavailable.
-- Use React components for feature boundaries and Tailwind utilities only when they improve readability; shared visual tokens live in `src/styles.css`.
-- Any new persisted field needs a safe default and a storage test.
-- Do not commit `node_modules`, `dist`, or `src-tauri/target`.
+## 3. 核心功能与 UI 规范 (UI & Features)
+### 3.1 时间块卡片流 (“今日”页面)
+时间块卡片按时间序排列，强制规定每行并排 2 张卡片（CSS Grid/Flex）。
 
-## Verification
+卡片背景需加载对应的本地资产（如 6:45~8:10 采用日出图片，15:30 采用下午茶/办公图片）。
 
-Run `npm test` and `npm run build` before submitting UI changes. Run `cargo check` from `src-tauri` on a machine with Rust installed before changing native commands.
-The current frontend test suite contains 8 Vitest tests.
+支持跨卡片、卡片内上下拖拽。
 
-## Windows packaging
+### 3.2 分类视图 (“时间轴”页面)
+带有历史日历组件，可读取历史 YYYY-MM-DD.md 文件。
 
-- Product name is `Anchora`; the stable application identifier is `com.timay84.anchora`.
-- Installer targets are `nsis` (`.exe`) and `msi` (`.msi`), configured in `src-tauri/tauri.conf.json`.
-- Icons are stored in `src-tauri/icons/`; the Windows installer uses `icons/icon.ico` and the PNG sizes listed in the configuration.
-- For Windows on ARM64, install the Rust target once with `rustup target add aarch64-pc-windows-msvc`, then run the ARM64 build command above from the repository root.
-- The ARM64 build requires Visual Studio Build Tools with the MSVC ARM64 toolchain and Windows SDK. Artifacts are written under `src-tauri/target/aarch64-pc-windows-msvc/release/bundle/`.
-- For Windows x64, install the Rust target once with `rustup target add x86_64-pc-windows-msvc`, then run the x64 build command above from the repository root. Artifacts are written under `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/`.
-- Release builds hide the Windows console; closing the main window hides it to the system tray instead. Left-click the Anchora tray icon to toggle the window, and use the tray menu's `退出` item to terminate the process.
+无视时间块，按三大属性展示：美好瞬间 / 日常事务 / 工作缓存。
 
-## Obsidian Vault
+## 4. 定时状态机与防呆约束 (Timer State Machine & Safeguards)
+### 4.1 状态约束 (Critical Constraint)
+正在 Focusing（专注中）或 Paused（暂停中）的项目，绝对禁止拖拽（Drag & Drop Disabled）。只有处于 Idle（空闲）状态时才允许拖动，避免 DOM 重新渲染导致计时器绑定丢失。
 
-- The Settings page can select an Obsidian Vault directory using the native dialog.
-- Anchora writes daily records to `<vault>/Anchora/Daily/YYYY-MM-DD.md` using the two-section Markdown template.
-- The timeline reads daily Markdown files from that directory and can open a selected note with the system default application.
-- LocalStorage remains the draft/settings cache. Daily Markdown is the shared record format for Anchora and Obsidian.
-- The current sync path is local and same-machine. Avoid editing the same daily file concurrently until conflict-aware merging is implemented.
+### 4.2 专注与总结隔离逻辑
+开始入口：取消全局开始按钮，改为每个项目独立拥有“开始专注”按钮。
+
+总结弹窗：当倒计时归零时触发。弹窗 UI 必须位于屏幕正中央、背景透明、文字/输入框/按钮不透明，方便用户看清底层未完成的任务。
+
+“再延5分钟”规则：在总结弹窗内，每个项目全局仅限点击 1 次延时，点击后按钮置灰（disabled）。
+
+状态持久化：专注状态需定期保存至 LocalStorage/Cache，防止异常退出导致计时丢失。
+
+### 4.3 Kiosk 锁屏模式 (Lock Screen)
+在完成（提前完成 / 写完总结并保存）后触发强制转场：
+
+展现形式：主显示器满屏置顶（Always on top无边框全屏），阻止其他窗口操作；扩展显示器加载纯黑遮罩。
+
+退出机制：
+
+锁屏倒计时结束自动解除。
+
+隐藏组合快捷键（在代码配置中定义）。
+
+Alt+F4 彻底退出应用程序。
+
+## 5. 变更历史与维护纪要
+当前处于 v2-refactor 架构重构过渡期：AST 已实现，正逐步接入 App 数据流与 UI。

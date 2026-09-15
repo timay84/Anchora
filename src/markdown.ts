@@ -1,5 +1,30 @@
 import { Moment, Task, WorkCache } from "./types";
 
+export type TimeBlockCategory = "美好瞬间" | "日常事务" | "工作缓存" | string;
+export type MarkdownChecklistItem = {
+  id: string;
+  text: string;
+  done: boolean;
+  kind?: "moment" | "task";
+};
+export type TimeBlockTemplate = {
+  id: string;
+  startTime: string;
+  endTime: string;
+  title: string;
+  categories: TimeBlockCategory[];
+  background?: string;
+};
+export type MarkdownTimeBlock = TimeBlockTemplate & {
+  items: MarkdownChecklistItem[];
+};
+export type DailyMarkdownAst = {
+  date: string;
+  preamble: string;
+  timeBlocks: MarkdownTimeBlock[];
+  workCache: MarkdownChecklistItem[];
+};
+
 export type DailyMarkdownRecord = {
   date: string;
   content: string;
@@ -10,6 +35,132 @@ export type ParsedDailyRecords = {
   tasks: Task[];
   workCache: WorkCache[];
 };
+
+const TIME_BLOCK_HEADER =
+  /^###\s+\[(\d{1,2}:\d{2})~(\d{1,2}:\d{2})\]\s+(.+?)(?:\s+\(属性:\s*(.+?)\))?\s*$/;
+const CHECKLIST = /^- \[([ xX])\]\s+(.*)$/;
+
+function normalizeTime(value: string) {
+  const [hours, minutes] = value.split(":").map(Number);
+  if (hours > 23 || minutes > 59) return null;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+export function parseTimeBlockHeader(line: string) {
+  const match = line.trim().match(TIME_BLOCK_HEADER);
+  if (!match) return null;
+  const startTime = normalizeTime(match[1]);
+  const endTime = normalizeTime(match[2]);
+  if (!startTime || !endTime) return null;
+  return {
+    startTime: match[1],
+    endTime: match[2],
+    title: match[3].trim(),
+    categories: (match[4] || "").split(/[、/,]/).map((item) => item.trim()).filter(Boolean),
+  };
+}
+
+function checklistItem(line: string, id: string) {
+  const match = line.match(CHECKLIST);
+  return match
+    ? { id, text: match[2].trim(), done: match[1].toLowerCase() === "x" }
+    : null;
+}
+
+export function parseDailyMarkdown(record: DailyMarkdownRecord): DailyMarkdownAst {
+  const lines = record.content.replace(/\r\n/g, "\n").split("\n");
+  const blocks: MarkdownTimeBlock[] = [];
+  const workCache: MarkdownChecklistItem[] = [];
+  const preamble: string[] = [];
+  let active: MarkdownTimeBlock | "cache" | null = null;
+  let activeLines: string[] = [];
+  const flush = () => {
+    if (active === "cache") {
+      activeLines.forEach((line, index) => {
+        const item = checklistItem(line.trim(), `md-${record.date}-cache-${index}`);
+        if (item) workCache.push(item);
+      });
+    } else if (active && typeof active !== "string") {
+      const block = active;
+      activeLines.forEach((line, index) => {
+        const item = checklistItem(line.trim(), `${block.id}-item-${index}`);
+        if (item) block.items.push(item);
+      });
+      blocks.push(block);
+    } else {
+      preamble.push(...activeLines);
+    }
+    activeLines = [];
+  };
+
+  lines.forEach((line) => {
+    const header = parseTimeBlockHeader(line);
+    if (header) {
+      flush();
+      active = {
+        ...header,
+        id: `time-${record.date}-${header.startTime}-${header.endTime}-${header.title}`,
+        items: [],
+      };
+    } else if (/^###\s+工作缓存区\s*$/.test(line.trim())) {
+      flush();
+      active = "cache";
+    } else {
+      activeLines.push(line);
+    }
+  });
+  flush();
+  while (preamble.at(-1) === "") preamble.pop();
+  return { date: record.date, preamble: preamble.join("\n"), timeBlocks: blocks, workCache };
+}
+
+export function serializeDailyMarkdown(document: DailyMarkdownAst) {
+  const sections: string[] = [];
+  if (document.preamble.trim()) sections.push(document.preamble.trimEnd());
+  document.timeBlocks.forEach((block) => {
+    const categories = block.categories.length
+      ? ` (属性: ${block.categories.join("/")})`
+      : "";
+    const items = block.items.map((item) => `- [${item.done ? "x" : " "}] ${item.text}`);
+    sections.push([
+      `### [${block.startTime}~${block.endTime}] ${block.title}${categories}`,
+      ...items,
+    ].join("\n"));
+  });
+  if (document.workCache.length) {
+    sections.push([
+      "### 工作缓存区",
+      ...document.workCache.map((item) => `- [${item.done ? "x" : " "}] ${item.text}`),
+    ].join("\n"));
+  }
+  return `${sections.join("\n\n")}\n`;
+}
+
+export function createDailyMarkdownAst(date: string, templates: readonly TimeBlockTemplate[] = []) {
+  return {
+    date,
+    preamble: "",
+    timeBlocks: templates.map((template) => ({ ...template, categories: [...template.categories], items: [] })),
+    workCache: [],
+  } satisfies DailyMarkdownAst;
+}
+
+export function addTimeBlockItem(document: DailyMarkdownAst, blockId: string, item: Omit<MarkdownChecklistItem, "id">) {
+  return {
+    ...document,
+    timeBlocks: document.timeBlocks.map((block) => block.id === blockId
+      ? { ...block, items: [...block.items, { ...item, id: `${block.id}-item-${block.items.length}` }] }
+      : block),
+  };
+}
+
+export function updateTimeBlock(document: DailyMarkdownAst, blockId: string, patch: Partial<TimeBlockTemplate>) {
+  return { ...document, timeBlocks: document.timeBlocks.map((block) => block.id === blockId ? { ...block, ...patch } : block) };
+}
+
+export function removeTimeBlock(document: DailyMarkdownAst, blockId: string) {
+  return { ...document, timeBlocks: document.timeBlocks.filter((block) => block.id !== blockId) };
+}
 
 export function dateKey(value: string | Date = new Date()) {
   if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -111,6 +262,7 @@ export function parseDailyNote(
         id: `md-${record.date}-moment-${index}`,
         text: match[2],
         done: match[1].toLowerCase() === "x",
+        status: "Idle",
         createdAt: createdAt(match[3]),
         ...(match[4]
           ? {
@@ -130,6 +282,7 @@ export function parseDailyNote(
         id: `md-${record.date}-task-${index}`,
         text: match[2],
         done: match[1].toLowerCase() === "x",
+        status: "Idle",
         createdAt: createdAt(match[3]),
         ...(match[4]
           ? {
