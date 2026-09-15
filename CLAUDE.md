@@ -91,3 +91,68 @@ Anchora 是基于生物钟对齐、认知负荷管理和时间块化的本地桌
 - 修改前端后运行 `npm test` 和 `npm run build`。
 - 修改 Tauri 原生逻辑后运行 `cargo check`。
 - 不提交 `node_modules`、`dist` 或 `src-tauri/target`。
+
+## Repository layout
+
+- `src/`：React + TypeScript 前端、App 数据流、状态机、Markdown AST、LocalStorage 和样式。
+- `src/assets/`：时间块卡片使用的本地 SVG 背景资产。
+- `src-tauri/src/`：Rust 原生命令、系统托盘、全局快捷键、显示器检测和多屏锁屏遮罩。
+- `src-tauri/tauri.conf.json`：Tauri 窗口、构建和打包配置。
+- `src/*.test.ts`：Vitest 单元测试。
+- `requirements.md`：产品需求和验收背景。
+
+## Development commands
+
+- `npm ci`：按 `package-lock.json` 安装依赖。
+- `npm run dev`：启动 Vite 前端开发服务器。
+- `npm test`：运行 Vitest 测试。
+- `npm run build`：执行 TypeScript 检查并构建前端。
+- `npm run tauri dev`：启动完整 Tauri 桌面应用。
+- `cargo check`：在 `src-tauri` 目录检查 Rust 原生代码。
+
+## Implementation rules
+
+- 保持本地优先，继续使用版本化的 `anchora:data:v1` LocalStorage key；新增字段必须提供安全默认值和迁移逻辑。
+- 时间块模板与今日实例必须分离；今日实例通过 `timeBlocksDate` 关联日期，不能反向修改全局模板。
+- 当前日期使用时间块 AST 读写，历史日期继续兼容旧版三段式 Markdown。
+- 专注会话必须保存 `projectId`、时间戳、暂停剩余时间和一次性延时标记，不能只保存易失的倒计时秒数。
+- `Focusing` 和 `Paused` 项目禁止完成切换、卡片内拖拽和跨卡片移动。
+- 原生能力必须通过 `src-tauri/src/lib.rs` 的 Tauri command 暴露，并兼容浏览器/Vite 模式下 `invoke` 不可用的情况。
+- 记录日期和 Markdown 时间使用系统本地时区；发送记录的目标、日期和发送时间必须保留。
+- 修改已有 Vault 前先读取并合并文件，不能在未导入前覆盖每日文件。
+- 不提交 `node_modules`、`dist`、`src-tauri/target`、日志或临时测试产物。
+
+## Verification
+
+前端或数据层改动至少运行：
+
+```bash
+npm test
+npm run build
+```
+
+Tauri 原生逻辑改动还必须运行：
+
+```bash
+cargo check
+```
+
+提交前检查 `git status --short --branch`，确认只有预期源码、测试和文档改动。
+
+## Windows packaging
+
+- 应用标识为 `com.timay84.anchora`，产品名为 `Anchora`。
+- Windows 打包目标为 NSIS 安装程序和 MSI 安装程序，配置位于 `src-tauri/tauri.conf.json`。
+- Windows x64：先安装 `x86_64-pc-windows-msvc` Rust target，再运行：
+  `npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis,msi`
+- Windows ARM64：先安装 `aarch64-pc-windows-msvc` Rust target，再运行：
+  `npm run tauri build -- --target aarch64-pc-windows-msvc --bundles nsis,msi`
+- 图标位于 `src-tauri/icons/`；不要提交生成的 `src-tauri/target` 目录。
+
+## Obsidian Vault
+
+- 在设置页选择 Obsidian Vault 文件夹后，Anchora 使用 `<vault>/Anchora/Daily/` 作为每日归档目录。
+- 文件名为 `YYYY-MM-DD(星期X).md`；当前日期使用时间块 AST，历史旧文件可继续按旧三段式结构解析。
+- Vault 连接时先读取已有每日文件，再合并到应用数据；连接失败时不能切换 Vault 或覆盖原文件。
+- 应用状态和草稿保存在本地 LocalStorage，Markdown 是与 Obsidian 共享的记录格式。
+- 当前同步路径为本机文件读写；尚未实现并发冲突解决，避免多个进程同时编辑同一每日文件。
