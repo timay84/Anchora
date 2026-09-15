@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State, WindowEvent,
+    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -41,6 +41,56 @@ fn list_monitors(app: AppHandle) -> Result<Vec<MonitorInfo>, String> {
         let position = monitor.position();
         MonitorInfo { name: monitor.name().map(|name| name.to_string()), width: size.width, height: size.height, x: position.x, y: position.y }
     }).collect())
+}
+
+fn close_lock_overlays(app: &AppHandle) {
+    let labels = app.webview_windows().keys()
+        .filter(|label| label.starts_with("lock-overlay-"))
+        .cloned()
+        .collect::<Vec<_>>();
+    for label in labels {
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.close();
+        }
+    }
+}
+
+fn show_lock_overlays(app: &AppHandle, main: &tauri::WebviewWindow) -> Result<(), String> {
+    let main_position = main.current_monitor()
+        .map_err(|error| error.to_string())?
+        .map(|monitor| {
+            let position = monitor.position();
+            (position.x, position.y)
+        });
+    let monitors = app.available_monitors().map_err(|error| error.to_string())?;
+    for (index, monitor) in monitors.into_iter().enumerate() {
+        let monitor_position = monitor.position();
+        if Some((monitor_position.x, monitor_position.y)) == main_position { continue; }
+        let position = monitor_position;
+        let size = monitor.size();
+        let label = format!("lock-overlay-{index}");
+        if let Some(existing) = app.get_webview_window(&label) {
+            let _ = existing.show();
+            continue;
+        }
+        let overlay = WebviewWindowBuilder::new(
+            app,
+            &label,
+            WebviewUrl::App("index.html".into()),
+        )
+        .title("Anchora 锁屏遮罩")
+        .position(position.x as f64, position.y as f64)
+        .inner_size(size.width as f64, size.height as f64)
+        .decorations(false)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(true)
+        .build()
+        .map_err(|error| error.to_string())?;
+        overlay.set_ignore_cursor_events(true).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -104,7 +154,8 @@ fn enter_focus_lock(app: AppHandle, state: State<'_, LockState>) -> Result<(), S
     window.show().map_err(|e| e.to_string())?;
     window.set_fullscreen(true).map_err(|e| e.to_string())?;
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
-    window.set_focus().map_err(|e| e.to_string())
+    window.set_focus().map_err(|e| e.to_string())?;
+    show_lock_overlays(&app, &window)
 }
 
 #[tauri::command]
@@ -120,6 +171,7 @@ fn exit_focus_lock(app: AppHandle, state: State<'_, LockState>) -> Result<(), St
     }
     window.set_fullscreen(false).map_err(|e| e.to_string())?;
     window.set_always_on_top(false).map_err(|e| e.to_string())?;
+    close_lock_overlays(&app);
     Ok(())
 }
 
@@ -200,9 +252,13 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
                 let locked = window.app_handle().state::<LockState>().0.lock().map(|value| *value).unwrap_or(false);
-                if !locked { let _ = window.hide(); }
+                if locked {
+                    window.app_handle().exit(0);
+                } else {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .run(tauri::generate_context!())

@@ -30,7 +30,9 @@ export function loadData(): AppData {
             done: item.done ?? Boolean(item.sentTo),
           }))
         : [],
-      focusSession: stored.focusSession || null,
+      focusSession: stored.focusSession
+        ? { ...stored.focusSession, projectId: stored.focusSession.projectId || "legacy-focus" }
+        : null,
       timeBlocks: Array.isArray(stored.timeBlocks) ? stored.timeBlocks : [],
       timeBlocksDate: typeof stored.timeBlocksDate === "string" ? stored.timeBlocksDate : "",
       settings: (() => {

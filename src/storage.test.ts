@@ -41,6 +41,7 @@ describe("Anchora local persistence", () => {
     saveData({
       ...defaultData,
       focusSession: {
+        projectId: "legacy-focus",
         phase: "locked",
         startedAt: "2026-09-13T09:00:00.000Z",
         endsAt: "2026-09-13T09:03:00.000Z",

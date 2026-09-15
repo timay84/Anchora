@@ -103,6 +103,10 @@ function mergeRecordsIntoTimeBlocks(
 }
 
 export function App() {
+  const isLockOverlay =
+    typeof window !== "undefined" &&
+    Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) &&
+    getCurrentWindow().label.startsWith("lock-overlay");
   const isReflectionWindow =
     typeof window !== "undefined" &&
     Boolean(
@@ -110,6 +114,7 @@ export function App() {
         .__TAURI_INTERNALS__,
     ) &&
     getCurrentWindow().label === "reflection";
+  if (isLockOverlay) return <div className="lock-overlay-window" aria-label="锁屏遮罩" />;
   if (isReflectionWindow) return <ReflectionWindow />;
   const [data, setData] = useState<AppData>(() => {
     const loaded = loadData();
@@ -124,6 +129,7 @@ export function App() {
   const [taskText, setTaskText] = useState("");
   const [menu, setMenu] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const [reflectionDraft, setReflectionDraft] = useState({ completed: "", pending: "" });
   const syncTimer = useRef<number | undefined>(undefined);
   const skipNextVaultRead = useRef(false);
   const update = (patch: Partial<AppData>) =>
@@ -133,6 +139,8 @@ export function App() {
   const displayEndsAt =
     session?.phase === "focusing"
       ? Date.parse(session.focusEndsAt || session.endsAt)
+      : session?.phase === "paused"
+        ? now + (session.pausedRemainingMs || 0)
       : session
         ? Date.parse(
             session.phase === "reflecting"
@@ -141,7 +149,9 @@ export function App() {
           )
         : 0;
   const remaining = session
-    ? Math.max(0, Math.ceil((displayEndsAt - now) / 1000))
+    ? session.phase === "paused"
+      ? Math.max(0, Math.ceil((session.pausedRemainingMs || 0) / 1000))
+      : Math.max(0, Math.ceil((displayEndsAt - now) / 1000))
     : 0;
   const formatTime = (seconds: number) =>
     `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
@@ -221,14 +231,10 @@ export function App() {
     };
   }, []);
   useEffect(() => {
-    if (!session || now < Date.parse(session.endsAt)) return;
+    if (!session || session.phase === "paused" || now < Date.parse(session.endsAt)) return;
     if (session.phase === "focusing") {
-      const endsAt =
-        session.reflectionEndsAt ||
-        new Date(
-          Date.parse(session.reflectionStartsAt || session.endsAt) +
-            data.settings.reflectionMinutes * 60_000,
-        ).toISOString();
+      const endsAt = new Date(Date.now() + data.settings.reflectionMinutes * 60_000).toISOString();
+      setReflectionDraft({ completed: "", pending: "" });
       setData((current) =>
         current.focusSession
           ? {
@@ -237,28 +243,13 @@ export function App() {
                 ...current.focusSession,
                 phase: "reflecting",
                 endsAt,
+                reflectionStartsAt: new Date().toISOString(),
                 reflectionEndsAt: endsAt,
               },
             }
           : current,
       );
-      void invoke("show_reflection_overlay", { endsAt }).catch(() => undefined);
-    } else if (session.phase === "reflecting") {
-      setData((current) =>
-        current.focusSession
-          ? {
-              ...current,
-              focusSession: {
-                ...current.focusSession,
-                phase: "locked",
-                endsAt: new Date(
-                  Date.now() + current.settings.lockMinutes * 60_000,
-                ).toISOString(),
-              },
-            }
-          : current,
-      );
-    } else {
+    } else if (session.phase === "locked") {
       update({ focusSession: null });
       void invoke("exit_focus_lock").catch(() => undefined);
     }
@@ -491,6 +482,7 @@ export function App() {
     if (item.sentTo) return;
     const sentAt = new Date().toISOString();
     const createdAt = localDateTimeIso(targetDate);
+    const forwardedText = `${item.text}（未完成。已转为${target === "moment" ? "美好瞬间" : "日常事务"}，发送于 ${new Date(sentAt).toLocaleString("zh-CN")}）`;
     const copiedItem = {
       id: crypto.randomUUID(),
       text: item.text,
@@ -502,7 +494,7 @@ export function App() {
       source === "moment"
         ? data.moments.map((record) =>
             record.id === item.id
-              ? { ...record, done: true, sentTo: target, sentAt }
+              ? { ...record, text: forwardedText, done: true, sentTo: target, sentAt, status: "Idle" as const }
               : record,
           )
         : data.moments;
@@ -510,7 +502,7 @@ export function App() {
       source === "task"
         ? data.tasks.map((record) =>
             record.id === item.id
-              ? { ...record, done: true, sentTo: target, sentAt }
+              ? { ...record, text: forwardedText, done: true, sentTo: target, sentAt, status: "Idle" as const }
               : record,
           )
         : data.tasks;
@@ -524,6 +516,12 @@ export function App() {
         target === "task"
           ? [copiedItem, ...tasks]
           : tasks,
+      timeBlocks: data.timeBlocks.map((block) => ({
+        ...block,
+        items: block.items.map((blockItem) => blockItem.id === item.id
+          ? { ...blockItem, text: forwardedText, done: true }
+          : blockItem),
+      })),
     };
     replaceData(next, [dateKey(item.createdAt), targetDate]);
   };
@@ -586,32 +584,110 @@ export function App() {
       // Do not switch Vault or overwrite its files when the initial read fails.
     }
   };
-  const startFocus = () => {
+  const patchProject = (current: AppData, projectId: string, patch: Partial<Pick<SendableRecord, "text" | "done" | "status">>) => ({
+    ...current,
+    moments: current.moments.map((item) => item.id === projectId ? { ...item, ...patch } : item),
+    tasks: current.tasks.map((item) => item.id === projectId ? { ...item, ...patch } : item),
+    timeBlocks: current.timeBlocks.map((block) => ({
+      ...block,
+      items: block.items.map((item) => item.id === projectId ? { ...item, ...patch } : item),
+    })),
+  });
+
+  const startFocus = (projectId: string) => {
+    if (data.focusSession) return;
+    const record = [...data.moments, ...data.tasks].find((item) => item.id === projectId);
+    if (!record || record.done || record.status !== "Idle") return;
     const start = new Date();
-    const focusMinutes = Math.max(
-      data.settings.focusMinutes,
-      data.settings.reflectionMinutes,
-    );
-    const focusEndsAt = new Date(
-      start.getTime() +
-        (focusMinutes - data.settings.reflectionMinutes) * 60_000,
-    ).toISOString();
-    const reflectionStartsAt = focusEndsAt;
-    const reflectionEndsAt = new Date(
-      Date.parse(reflectionStartsAt) + data.settings.reflectionMinutes * 60_000,
-    ).toISOString();
-    update({
+    const endsAt = new Date(start.getTime() + data.settings.focusMinutes * 60_000).toISOString();
+    const next = patchProject(data, projectId, { status: "Focusing" });
+    replaceData({
+      ...next,
       focusSession: {
+        projectId,
         phase: "focusing",
         startedAt: start.toISOString(),
-        endsAt: focusEndsAt,
-        focusEndsAt,
-        reflectionStartsAt,
-        reflectionEndsAt,
+        endsAt,
+        focusEndsAt: endsAt,
+        extensionUsed: false,
       },
     });
     setNow(Date.now());
-    void invoke("show_focus_overlay").catch(() => undefined);
+  };
+
+  const pauseFocus = () => {
+    if (!session || session.phase !== "focusing") return;
+    const remainingMs = Math.max(0, Date.parse(session.endsAt) - Date.now());
+    replaceData({
+      ...patchProject(data, session.projectId, { status: "Paused" }),
+      focusSession: { ...session, phase: "paused", pausedRemainingMs: remainingMs },
+    });
+  };
+
+  const resumeFocus = () => {
+    if (!session || session.phase !== "paused") return;
+    const endsAt = new Date(Date.now() + (session.pausedRemainingMs || 0)).toISOString();
+    replaceData({
+      ...patchProject(data, session.projectId, { status: "Focusing" }),
+      focusSession: { ...session, phase: "focusing", endsAt, pausedRemainingMs: undefined },
+    });
+  };
+
+  const endFocus = () => {
+    if (!session || (session.phase !== "focusing" && session.phase !== "paused")) return;
+    const record = [...data.moments, ...data.tasks].find((item) => item.id === session.projectId);
+    if (!record) return;
+    const elapsed = session.phase === "paused"
+      ? Math.max(1, Math.round((data.settings.focusMinutes * 60_000 - (session.pausedRemainingMs || 0)) / 60_000))
+      : Math.max(1, Math.round((Date.now() - Date.parse(session.startedAt)) / 60_000));
+    const next = patchProject(data, session.projectId, {
+      text: `${record.text}（用时${elapsed}分钟完成）`,
+      done: true,
+      status: "Idle",
+    });
+    replaceData({
+      ...next,
+      focusSession: {
+        ...session,
+        phase: "locked",
+        endsAt: new Date(Date.now() + data.settings.lockMinutes * 60_000).toISOString(),
+      },
+    });
+  };
+
+  const extendFocus = () => {
+    if (!session || session.phase !== "reflecting" || session.extensionUsed) return;
+    const endsAt = new Date(Date.now() + 5 * 60_000).toISOString();
+    replaceData({
+      ...patchProject(data, session.projectId, { status: "Focusing" }),
+      focusSession: { ...session, phase: "focusing", endsAt, extensionUsed: true },
+    });
+  };
+
+  const finishReflection = (completed: string, pending: string) => {
+    if (!session || session.phase !== "reflecting") return;
+    const record = [...data.moments, ...data.tasks].find((item) => item.id === session.projectId);
+    const text = record ? `${record.text}（未完成，已存缓存区）` : "未完成项目（已存缓存区）";
+    const next = patchProject(data, session.projectId, { text, done: true, status: "Idle" });
+    replaceData({
+      ...next,
+      workCache: [
+        {
+          id: crypto.randomUUID(),
+          completed: completed.trim(),
+          pending: pending.trim(),
+          done: false,
+          createdAt: new Date().toISOString(),
+        },
+        ...data.workCache,
+      ],
+      focusSession: {
+        ...session,
+        phase: "locked",
+        endsAt: new Date(Date.now() + data.settings.lockMinutes * 60_000).toISOString(),
+      },
+    });
+    setReflectionDraft({ completed: "", pending: "" });
   };
 
   const testReflection = () => {
@@ -622,6 +698,7 @@ export function App() {
     ).toISOString();
     update({
       focusSession: {
+        projectId: [...data.moments, ...data.tasks][0]?.id || "test-project",
         phase: "reflecting",
         startedAt: reflectionStartsAt,
         endsAt: reflectionEndsAt,
@@ -630,9 +707,6 @@ export function App() {
         reflectionEndsAt,
       },
     });
-    void invoke("show_reflection_overlay", { endsAt: reflectionEndsAt }).catch(
-      () => undefined,
-    );
   };
 
   const testLock = () => {
@@ -642,6 +716,7 @@ export function App() {
     ).toISOString();
     update({
       focusSession: {
+        projectId: [...data.moments, ...data.tasks][0]?.id || "test-project",
         phase: "locked",
         startedAt: now.toISOString(),
         endsAt: lockEndsAt,
@@ -651,58 +726,10 @@ export function App() {
   };
 
   useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    let lastPayload: { key: string; at: number } | undefined;
-    void listen<ReflectionCompleted>("reflection_completed", ({ payload }) => {
-      const key = `${payload.completed}\u0000${payload.pending}`;
-      const now = Date.now();
-      if (lastPayload?.key === key && now - lastPayload.at < 1_000) return;
-      lastPayload = { key, at: now };
-      setData((current) => {
-        const next =
-          payload.completed.trim() || payload.pending.trim()
-            ? {
-                ...current,
-                workCache: [
-                  {
-                    id: crypto.randomUUID(),
-                    completed: payload.completed.trim(),
-                    pending: payload.pending.trim(),
-                    done: false,
-                    createdAt: new Date().toISOString(),
-                  },
-                  ...current.workCache,
-                ],
-              }
-            : current;
-        const locked = next.focusSession
-          ? {
-              ...next,
-              focusSession: {
-                ...next.focusSession,
-                phase: "locked" as const,
-                endsAt: new Date(
-                  Date.now() + next.settings.lockMinutes * 60_000,
-                ).toISOString(),
-              },
-            }
-          : next;
-        syncDates(locked.settings.vaultPath, locked, [dateKey()]);
-        void invoke("enter_focus_lock").catch(() => undefined);
-        return locked;
-      });
-    })
-      .then((stop) => {
-        if (disposed) stop();
-        else unlisten = stop;
-      })
-      .catch(() => undefined);
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
+    if (session?.phase === "reflecting" && remaining === 0) {
+      finishReflection(reflectionDraft.completed, reflectionDraft.pending);
+    }
+  }, [session?.phase, remaining, reflectionDraft]);
 
   return (
     <div className="app-shell">
@@ -739,7 +766,9 @@ export function App() {
           phase={phase}
           remaining={remaining}
           focusMinutes={data.settings.focusMinutes}
-          startFocus={startFocus}
+          pauseFocus={pauseFocus}
+          resumeFocus={resumeFocus}
+          endFocus={endFocus}
           formatTime={formatTime}
         />
         <div className="test-controls">
@@ -780,26 +809,16 @@ export function App() {
             <span className="status-dot" />
             自动保存中
           </div>
-          {page === "today" && (
-            <div className="mobile-focus-control">
-              <FocusControl
-                phase={phase}
-                remaining={remaining}
-                focusMinutes={data.settings.focusMinutes}
-                startFocus={startFocus}
-                formatTime={formatTime}
-              />
-            </div>
-          )}
         </header>
         {page === "today" && (
           <TimeBlockTodayPage
             data={data}
             onAddTimeBlockItem={addTimeBlockItem}
             onToggleTimeBlockItem={toggleTimeBlockItem}
-            onDeleteTimeBlockItem={deleteTimeBlockItem}
-            onMoveTimeBlockItem={moveTimeBlockItem}
-          />
+              onDeleteTimeBlockItem={deleteTimeBlockItem}
+              onMoveTimeBlockItem={moveTimeBlockItem}
+              onStartFocus={startFocus}
+            />
         )}
         {page === "history" && (
           <TimelinePanel
@@ -830,6 +849,18 @@ export function App() {
            <small>紧急退出：Ctrl + Alt + Shift + F12</small>
         </div>
       )}
+      {phase === "reflecting" && (
+        <ReflectionDialog
+          remaining={remaining}
+          completed={reflectionDraft.completed}
+          pending={reflectionDraft.pending}
+          extensionUsed={Boolean(session?.extensionUsed)}
+          onChangeCompleted={(completed) => setReflectionDraft((current) => ({ ...current, completed }))}
+          onChangePending={(pending) => setReflectionDraft((current) => ({ ...current, pending }))}
+          onExtend={extendFocus}
+          onSave={() => finishReflection(reflectionDraft.completed, reflectionDraft.pending)}
+        />
+      )}
     </div>
   );
 }
@@ -840,12 +871,14 @@ function TimeBlockTodayPage({
   onToggleTimeBlockItem,
   onDeleteTimeBlockItem,
   onMoveTimeBlockItem,
+  onStartFocus,
 }: {
   data: AppData;
   onAddTimeBlockItem: (blockId: string, text: string, kind: "moment" | "task") => void;
   onToggleTimeBlockItem: (blockId: string, itemId: string) => void;
   onDeleteTimeBlockItem: (blockId: string, itemId: string) => void;
   onMoveTimeBlockItem: (itemId: string, blockId: string, index?: number) => void;
+  onStartFocus: (itemId: string) => void;
 }) {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [kinds, setKinds] = useState<Record<string, "moment" | "task">>({});
@@ -913,6 +946,11 @@ function TimeBlockTodayPage({
                     />
                     <span className="time-block-item-text">{item.text}</span>
                     {locked && <small className="item-status">{status}</small>}
+                    {!item.done && status === "Idle" && (
+                      <button type="button" className="start-focus-button" disabled={Boolean(data.focusSession)} onClick={() => onStartFocus(item.id)}>
+                        开始专注
+                      </button>
+                    )}
                     <button type="button" onClick={() => onDeleteTimeBlockItem(block.id, item.id)} aria-label={`删除${item.text}`}>
                       ×
                     </button>
@@ -1384,13 +1422,17 @@ function FocusControl({
   phase,
   remaining,
   focusMinutes,
-  startFocus,
+  pauseFocus,
+  resumeFocus,
+  endFocus,
   formatTime,
 }: {
   phase?: FocusPhase;
   remaining: number;
   focusMinutes: number;
-  startFocus: () => void;
+  pauseFocus: () => void;
+  resumeFocus: () => void;
+  endFocus: () => void;
   formatTime: (seconds: number) => string;
 }) {
   return (
@@ -1399,16 +1441,61 @@ function FocusControl({
         <Clock3 size={17} />
         <strong>{remaining ? formatTime(remaining) : `${focusMinutes}:00`}</strong>
       </div>
-      <button className="dark-button" disabled={Boolean(phase)} onClick={startFocus}>
-        {phase === "focusing"
-          ? "专注进行中"
-          : phase === "reflecting"
-            ? "总结进行中"
-            : phase === "locked"
-              ? "锁定中"
-              : "开始专注"}
-      </button>
+      {phase === "focusing" && <button className="dark-button" onClick={pauseFocus}>暂停</button>}
+      {phase === "paused" && <button className="dark-button" onClick={resumeFocus}>继续</button>}
+      {(phase === "focusing" || phase === "paused") && <button className="focus-end-button" onClick={endFocus}>结束专注</button>}
+      {phase === "reflecting" && <span className="focus-phase-label">总结中</span>}
+      {phase === "locked" && <span className="focus-phase-label">锁定中</span>}
+      {!phase && <span className="focus-phase-label">选择项目开始专注</span>}
     </section>
+  );
+}
+
+function ReflectionDialog({
+  remaining,
+  completed,
+  pending,
+  extensionUsed,
+  onChangeCompleted,
+  onChangePending,
+  onExtend,
+  onSave,
+}: {
+  remaining: number;
+  completed: string;
+  pending: string;
+  extensionUsed: boolean;
+  onChangeCompleted: (value: string) => void;
+  onChangePending: (value: string) => void;
+  onExtend: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="reflection-dialog-backdrop">
+      <div className="reflection-dialog" role="dialog" aria-modal="true">
+        <div className="reflection-dialog-heading">
+          <div>
+            <span className="kicker">专注已结束</span>
+            <h2>把未完成的事情安放好。</h2>
+          </div>
+          <strong>{remaining}s</strong>
+        </div>
+        <label>
+          已完成
+          <textarea value={completed} onChange={(event) => onChangeCompleted(event.target.value)} autoFocus />
+        </label>
+        <label>
+          未完成 / 下一步
+          <textarea value={pending} onChange={(event) => onChangePending(event.target.value)} />
+        </label>
+        <div className="reflection-dialog-actions">
+          <button className="snooze-button" disabled={extensionUsed} onClick={onExtend}>
+            {extensionUsed ? "已延时 5 分钟" : "再延 5 分钟"}
+          </button>
+          <button className="primary-button" onClick={onSave}>保存并锁屏</button>
+        </div>
+      </div>
+    </div>
   );
 }
 

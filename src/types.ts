@@ -37,11 +37,14 @@ export type Settings = {
   volume: number;
   vaultPath: string;
 };
-export type FocusPhase = "focusing" | "reflecting" | "locked";
+export type FocusPhase = "focusing" | "paused" | "reflecting" | "locked";
 export type FocusSession = {
+  projectId: string;
   phase: FocusPhase;
   startedAt: string;
   endsAt: string;
+  pausedRemainingMs?: number;
+  extensionUsed?: boolean;
   focusEndsAt?: string;
   reflectionStartsAt?: string;
   reflectionEndsAt?: string;
@@ -66,7 +69,7 @@ export const defaultData: AppData = {
   timeBlocks: [],
   timeBlocksDate: "",
   settings: {
-    focusMinutes: 17,
+    focusMinutes: 20,
     reflectionMinutes: 3,
     lockMinutes: 3,
     sound: true,
